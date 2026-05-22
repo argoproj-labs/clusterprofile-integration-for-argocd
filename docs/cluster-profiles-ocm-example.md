@@ -267,7 +267,11 @@ kubectl create secret generic cp-creds-secret \
       "name": "open-cluster-management",
       "execConfig": {
         "command": "/plugins/cp-creds",
-        "args": ["--managed-serviceaccount=argocd"],
+        "args": [
+          "--managed-serviceaccount=argocd",
+          "--cluster-name={{ .ClusterProfileName }}",
+          "--cluster-server={{ .ClusterProfileServer }}"
+        ],
         "apiVersion": "client.authentication.k8s.io/v1",
         "provideClusterInfo": true
       }
@@ -310,7 +314,35 @@ spec:
       initContainers:
         - name: install-cp-creds
           image: quay.io/open-cluster-management/cp-creds:latest
-          command: ["cp", "/cp-creds", "/plugins/cp-creds"]
+          command:
+            - sh
+            - -c
+            - |
+              cp /cp-creds /plugins/cp-creds-binary
+              cat << '"'"'EOF'"'"' > /plugins/cp-creds
+              #!/bin/sh
+              ARGS=""
+              CLUSTER_NAME=""
+              CLUSTER_SERVER=""
+              for arg in "$@"; do
+                case $arg in
+                  --cluster-name=*)
+                    CLUSTER_NAME="${arg#*=}"
+                    ;;
+                  --cluster-server=*)
+                    CLUSTER_SERVER="${arg#*=}"
+                    ;;
+                  *)
+                    ARGS="$ARGS \"$arg\""
+                    ;;
+                esac
+              done
+              if [ -n "$CLUSTER_NAME" ] && [ -n "$CLUSTER_SERVER" ]; then
+                export KUBERNETES_EXEC_INFO="{\"kind\":\"ExecCredential\",\"apiVersion\":\"client.authentication.k8s.io/v1\",\"spec\":{\"interactive\":false,\"cluster\":{\"server\":\"$CLUSTER_SERVER\",\"config\":{\"clusterName\":\"$CLUSTER_NAME\"}}}}"
+              fi
+              eval "/plugins/cp-creds-binary $ARGS"
+              EOF
+              chmod +x /plugins/cp-creds
           volumeMounts:
             - name: clusterprofile-plugins
               mountPath: /plugins
