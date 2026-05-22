@@ -188,9 +188,15 @@ func (r *ClusterProfileReconciler) mutateSecret(secret *corev1.Secret, clusterPr
 
 	// If there is an exec provider, add it to the config.
 	if config.ExecProvider != nil {
+		args := make([]string, len(config.ExecProvider.Args))
+		for i, arg := range config.ExecProvider.Args {
+			replaced := strings.ReplaceAll(arg, "{{ .ClusterProfileName }}", clusterProfile.Name)
+			replaced = strings.ReplaceAll(replaced, "{{ .ClusterProfileServer }}", clusterProfile.Status.AccessProviders[0].Cluster.Server)
+			args[i] = replaced
+		}
 		apiConfig.ExecProviderConfig = &v1alpha1.ExecProviderConfig{
 			Command:            config.ExecProvider.Command,
-			Args:               config.ExecProvider.Args,
+			Args:               args,
 			APIVersion:         config.ExecProvider.APIVersion,
 			ProvideClusterInfo: config.ExecProvider.ProvideClusterInfo,
 		}
