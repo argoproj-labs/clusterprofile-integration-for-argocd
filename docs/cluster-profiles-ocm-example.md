@@ -1,0 +1,410 @@
+# Using Cluster Profiles with Open Cluster Management (OCM)
+
+This guide demonstrates how to use [OCM's ClusterProfile Access Providers](https://open-cluster-management.io/docs/scenarios/clusterprofile-access-providers/) to automatically register OCM managed clusters in Argo CD via ClusterProfile resources.
+
+OCM automatically creates and manages ClusterProfile objects for all managed clusters bound to a namespace. This works on **any Kubernetes distribution** where OCM is installed.
+
+## Prerequisites
+
+- [kubectl](https://kubernetes.io/docs/tasks/tools/)
+- [clusteradm](https://open-cluster-management.io/getting-started/quick-start/#install-clusteradm-cli-tool) (OCM CLI)
+- [Helm](https://helm.sh/docs/intro/install/) v3+
+- Two Kubernetes clusters (this guide uses [Kind](https://kind.sigs.k8s.io/) as an example, but any Kubernetes distribution works)
+
+Install `clusteradm`:
+```bash
+curl -L https://raw.githubusercontent.com/open-cluster-management-io/clusteradm/main/install.sh | bash
+```
+
+Add the OCM Helm chart repository:
+```bash
+helm repo add ocm https://open-cluster-management.io/helm-charts
+helm repo update
+```
+
+## 1. Create Hub and Managed Clusters
+
+Create two `kind` clusters. If you are using existing clusters, skip this step and substitute your own kubeconfig contexts throughout.
+
+```bash
+kind create cluster --name hub
+kind create cluster --name managed1
+```
+
+## 2. Initialize the OCM Hub
+
+Initialize OCM on the hub cluster with the **ClusterProfile** feature gate enabled. This allows OCM to create `ClusterProfile` objects for managed clusters.
+
+```bash
+kubectl config use-context kind-hub
+clusteradm init --feature-gates=ClusterProfile=true --wait
+```
+
+Save the join command token from the output.
+
+```bash
+export OCM_TOKEN=<token from clusteradm init output>
+export HUB_APISERVER=<hub api server>
+```
+
+## 3. Register the Managed Cluster
+
+On the managed cluster, run the join command:
+```bash
+kubectl config use-context kind-managed1
+clusteradm join --hub-token=${OCM_TOKEN} --hub-apiserver=${HUB_APISERVER} --cluster-name managed1 --wait
+```
+
+Accept the managed cluster on the hub:
+```bash
+kubectl config use-context kind-hub
+clusteradm accept --clusters managed1 --wait
+```
+
+Verify the managed cluster is registered:
+```bash
+kubectl get managedclusters
+```
+
+You should see `managed1` with `HubAccepted=true` and `Available=True`.
+
+## 4. Install OCM Add-ons
+
+Install the **cluster-proxy** and **managed-serviceaccount** add-ons with ClusterProfile support enabled.
+
+### cluster-proxy
+
+The cluster-proxy add-on provides connectivity from the hub to managed cluster API servers and provisions access providers for ClusterProfile objects.
+
+```bash
+kubectl config use-context kind-hub
+helm install cluster-proxy ocm/cluster-proxy \
+  -n open-cluster-management-addon \
+  --create-namespace \
+  --set userServer.enabled=true \
+  --set enableServiceProxy=true \
+  --set featureGates.clusterProfileAccessProvider=true
+```
+
+### managed-serviceaccount
+
+The managed-serviceaccount add-on creates service accounts on managed clusters and syncs their tokens back to the hub. The `clusterProfileCredSyncer` feature gate syncs credentials into ClusterProfile objects.
+
+```bash
+helm install managed-serviceaccount ocm/managed-serviceaccount \
+  -n open-cluster-management-addon \
+  --create-namespace \
+  --set featureGates.clusterProfileCredSyncer=true
+```
+
+### cluster-permission (Optional)
+
+The cluster-permission add-on lets you define RBAC on managed clusters from the hub. If you prefer to manage RBAC manually on each managed cluster, skip this.
+
+```bash
+helm install cluster-permission ocm/cluster-permission \
+  -n open-cluster-management \
+  --create-namespace
+```
+
+Wait for add-on agents to be deployed to the managed cluster:
+```bash
+kubectl get managedclusteraddons -n managed1
+```
+
+You should see `cluster-proxy` and `managed-serviceaccount` with `Available=True`.
+
+## 5. Create ManagedClusterSet and Binding
+
+Create a `ManagedClusterSet` that selects your managed clusters, and bind it to the `argocd` namespace. This tells OCM to create `ClusterProfile` objects in the `argocd` namespace.
+
+```bash
+kubectl create namespace argocd
+kubectl apply -f - <<EOF
+apiVersion: cluster.open-cluster-management.io/v1beta2
+kind: ManagedClusterSet
+metadata:
+  name: argocd-clusters
+spec:
+  clusterSelector:
+    labelSelector: {}
+    selectorType: LabelSelector
+---
+apiVersion: cluster.open-cluster-management.io/v1beta2
+kind: ManagedClusterSetBinding
+metadata:
+  name: argocd-clusters
+  namespace: argocd
+spec:
+  clusterSet: argocd-clusters
+EOF
+```
+
+> [!TIP]
+> The empty `labelSelector: {}` selects all managed clusters. To select specific clusters, add labels to your managed clusters and use a `matchLabels` selector.
+
+## 6. Create ManagedServiceAccount
+
+Create a `ManagedServiceAccount` in the managed cluster's namespace on the hub. The label `sync-to-clusterprofile: "true"` syncs the credentials into the ClusterProfile's access provider.
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: authentication.open-cluster-management.io/v1beta1
+kind: ManagedServiceAccount
+metadata:
+  name: argocd
+  namespace: managed1
+  labels:
+    authentication.open-cluster-management.io/sync-to-clusterprofile: "true"
+spec:
+  rotation:
+    enabled: true
+    validity: 8640h0m0s
+EOF
+```
+
+To add more managed clusters, create a `ManagedServiceAccount` with the same name (`argocd`) in each managed cluster's namespace.
+
+## 7. Grant Permissions on the Managed Cluster
+
+The `ManagedServiceAccount` add-on creates a ServiceAccount on the managed cluster, but it has no permissions by default. Grant it `cluster-admin` access so Argo CD can deploy applications.
+
+```bash
+kubectl config use-context kind-managed1
+kubectl create clusterrolebinding argocd-managed-sa \
+  --clusterrole=cluster-admin \
+  --serviceaccount=open-cluster-management-managed-serviceaccount:argocd
+```
+
+> [!NOTE]
+> If you installed the **cluster-permission** add-on, you can grant permissions from the hub instead:
+> ```bash
+> kubectl config use-context kind-hub
+> kubectl apply -f - <<EOF
+> apiVersion: rbac.open-cluster-management.io/v1alpha1
+> kind: ClusterPermission
+> metadata:
+>   name: argocd-cluster-admin
+>   namespace: managed1
+> spec:
+>   clusterRole:
+>     rules:
+>     - apiGroups: ["*"]
+>       resources: ["*"]
+>       verbs: ["*"]
+>   clusterRoleBinding:
+>     subject:
+>       kind: ServiceAccount
+>       name: argocd
+>       namespace: open-cluster-management-managed-serviceaccount
+> EOF
+> ```
+
+Create the namespace for the sample application:
+```bash
+kubectl config use-context kind-managed1
+kubectl create namespace guestbook
+```
+
+## 8. Verify ClusterProfile
+
+Switch back to the hub and verify that OCM created a `ClusterProfile` with the access provider in the `argocd` namespace:
+
+```bash
+kubectl config use-context kind-hub
+kubectl config set-context --current --namespace=argocd
+kubectl get clusterprofiles
+```
+
+Inspect the ClusterProfile to confirm it has the `open-cluster-management` access provider:
+```bash
+kubectl get clusterprofile managed1 -o yaml
+```
+
+You should see the `status.accessProviders` section with `name: open-cluster-management`, a `server` URL pointing through cluster-proxy, and `certificate-authority-data`.
+
+## 9. Install Argo CD
+
+Install Argo CD on the hub cluster:
+```bash
+kubectl config use-context kind-hub
+kubectl config set-context --current --namespace=argocd
+
+kubectl apply --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+# Install the standalone Cluster Profile Controller
+kubectl apply -f artifacts/manifests/install.yaml
+```
+
+### \[Alternative\] Local Development
+
+If you have made changes to the controller source code, build and deploy a local image instead:
+```bash
+make docker-build IMG=controller:dev
+kind load docker-image controller:dev --name hub
+
+cd artifacts/manifests/base/clusterprofile-controller
+kustomize edit set image controller:latest=controller:dev
+kubectl apply -k .
+```
+
+## 10. Configure the cp-creds Access Provider
+
+OCM's `cp-creds` plugin handles authentication to managed clusters via ManagedServiceAccount tokens. It needs to be:
+1. Referenced in an **access providers file** (read by the ClusterProfile controller)
+2. **Mounted as a binary** in the Argo CD application controller (which executes it at sync time)
+
+### Create the access providers file
+
+Create a Secret with the `cp-creds.json` providers file. The provider `name` must match the access provider name in the ClusterProfile status (`open-cluster-management`).
+
+```bash
+kubectl create secret generic cp-creds-secret \
+  --from-file=cp-creds.json=/dev/stdin <<EOF
+{
+  "providers": [
+    {
+      "name": "open-cluster-management",
+      "execConfig": {
+        "command": "/plugins/cp-creds",
+        "args": ["--managed-serviceaccount=argocd"],
+        "apiVersion": "client.authentication.k8s.io/v1",
+        "provideClusterInfo": true
+      }
+    }
+  ]
+}
+EOF
+```
+
+### Mount the providers file in the ClusterProfile controller
+
+```bash
+kubectl patch deploy/argocd-clusterprofile-controller --type strategic --patch '
+spec:
+  template:
+    spec:
+      volumes:
+        - name: cp-creds-vol
+          secret:
+            secretName: cp-creds-secret
+      containers:
+        - name: argocd-clusterprofile-controller
+          volumeMounts:
+            - name: cp-creds-vol
+              mountPath: /app/cp-creds
+          args:
+            - "/manager"
+            - "--cluster-profile-providers-file=/app/cp-creds/cp-creds.json"'
+```
+
+### Mount the cp-creds binary in the application controller
+
+The application controller executes `cp-creds` at sync time to obtain credentials. Mount the binary using an `initContainer`:
+
+```bash
+kubectl patch sts/argocd-application-controller --type strategic --patch '
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: install-cp-creds
+          image: quay.io/open-cluster-management/cp-creds:latest
+          command: ["cp", "/cp-creds", "/plugins/cp-creds"]
+          volumeMounts:
+            - name: clusterprofile-plugins
+              mountPath: /plugins
+      volumes:
+        - name: clusterprofile-plugins
+          emptyDir: {}
+      containers:
+        - name: argocd-application-controller
+          volumeMounts:
+            - name: clusterprofile-plugins
+              mountPath: /plugins'
+```
+
+Wait for both controllers to restart:
+```bash
+kubectl rollout status deploy/argocd-clusterprofile-controller
+kubectl rollout status sts/argocd-application-controller
+```
+
+## 11. Create ApplicationSet
+
+Create an ApplicationSet with the ClusterGenerator to deploy an application to all registered clusters:
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: guestbook
+  namespace: argocd
+spec:
+  generators:
+  - clusters: {}
+  goTemplate: true
+  template:
+    metadata:
+      name: 'guestbook-{{ .nameNormalized }}'
+    spec:
+      project: "default"
+      source:
+        repoURL: https://github.com/argoproj/argocd-example-apps.git
+        targetRevision: HEAD
+        path: guestbook
+      destination:
+        server: '{{ .server }}'
+        namespace: guestbook
+EOF
+```
+
+## 12. Verify
+
+Check that the Argo CD cluster secret was generated from the ClusterProfile:
+```bash
+kubectl get secrets -l argocd.argoproj.io/secret-type=cluster
+```
+
+Verify the application was created:
+```bash
+kubectl get applications
+```
+
+Check that the guestbook pods are running on the managed cluster:
+```bash
+kubectl config use-context kind-managed1
+kubectl get pods -n guestbook
+```
+
+You should see the `guestbook-ui` pod running.
+
+If not, debug with:
+```bash
+kubectl config use-context kind-hub
+kubectl config set-context --current --namespace=argocd
+echo -e "\nClusterProfile controller errors:" && kubectl logs deployment/argocd-clusterprofile-controller | grep -i error
+echo -e "\nApplication controller errors:" && kubectl logs statefulset/argocd-application-controller | grep -i error
+echo -e "\nClusterProfiles:" && kubectl get clusterprofiles
+echo -e "\nCluster Secrets:" && kubectl get secrets -l argocd.argoproj.io/secret-type=cluster
+echo -e "\nApplications:" && kubectl get applications
+```
+
+## 13. Adding More Managed Clusters
+
+To add more clusters, repeat these steps for each new cluster:
+
+1. Register the cluster with OCM (`clusteradm join` / `clusteradm accept`)
+2. Create a `ManagedServiceAccount` named `argocd` in the cluster's namespace on the hub (with the `sync-to-clusterprofile` label)
+3. Grant RBAC on the managed cluster
+
+OCM will automatically create a `ClusterProfile`, the ClusterProfile controller will generate an Argo CD cluster secret, and the ApplicationSet will deploy the application, no manual cluster registration in Argo CD required.
+
+## 14. Cleanup
+
+Delete the Kind clusters:
+```bash
+kind delete cluster --name hub
+kind delete cluster --name managed1
+```
