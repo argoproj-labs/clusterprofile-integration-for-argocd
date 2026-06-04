@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	cliName = common.CommandClusterProfileController
+	cliName = "argocd-clusterprofile-controller"
 )
 
 func NewCommand() *cobra.Command {
