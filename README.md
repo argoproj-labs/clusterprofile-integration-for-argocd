@@ -144,6 +144,6 @@ Contributions are welcome!
 
 ## Community & Governance
 
-- **Slack**: Join the discussion in the `#argo-cd` channel on the [CNCF Slack](https://slack.cncf.io/).
+- **Slack**: Join the discussion in the `#argo-cluster-auth` channel on the [CNCF Slack](https://slack.cncf.io/).
 - **Code of Conduct**: This project adheres to the [CNCF Code of Conduct](https://github.com/cncf/foundation/blob/main/code-of-conduct.md).
 - **Issues & Feature Requests**: Please open an issue in this repository to report bugs or request new features.
