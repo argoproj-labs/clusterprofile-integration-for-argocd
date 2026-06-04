@@ -48,7 +48,8 @@ kind load docker-image controller:dev --name hub
 # Deploy local controller manifests using Kustomize
 cd artifacts/manifests/base/clusterprofile-controller
 kustomize edit set image controller:latest=controller:dev
-kubectl apply -k .
+cd -
+kubectl apply -k artifacts/manifests
 ```
 
 ## 3. Configure Spoke Cluster Service Account
