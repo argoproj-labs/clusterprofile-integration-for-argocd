@@ -1,5 +1,6 @@
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
+E2E_IMG ?= controller:dev
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -36,6 +37,11 @@ vet: ## Run go vet against code.
 .PHONY: test
 test: fmt vet ## Run tests.
 	go test ./... -coverprofile cover.out
+
+.PHONY: e2e
+e2e: ## Run full kind-based e2e tests.
+	$(MAKE) docker-build IMG=$(E2E_IMG)
+	E2E_IMG=$(E2E_IMG) ./hack/e2e-kind.sh
 
 ##@ Build
 
