@@ -129,10 +129,13 @@ func (r *ClusterProfileReconciler) pruneSecret(ctx context.Context, clusterProfi
 // mutateSecret populates the secret with data from the ClusterProfile.
 func (r *ClusterProfileReconciler) mutateSecret(secret *corev1.Secret, clusterProfile *clusterinventory.ClusterProfile) error {
 	// Set labels on the secret to identify it as a cluster secret and link it to the ClusterProfile.
-	secret.Labels = map[string]string{
-		common.LabelKeySecretType: common.LabelValueSecretTypeCluster,
-		clusterProfileOriginLabel: fmt.Sprintf("%s-%s", clusterProfile.Namespace, clusterProfile.Name),
+	labels := make(map[string]string, len(clusterProfile.Labels)+2)
+	for key, value := range clusterProfile.Labels {
+		labels[key] = value
 	}
+	labels[common.LabelKeySecretType] = common.LabelValueSecretTypeCluster
+	labels[clusterProfileOriginLabel] = fmt.Sprintf("%s-%s", clusterProfile.Namespace, clusterProfile.Name)
+	secret.Labels = labels
 
 	if len(clusterProfile.Status.AccessProviders) == 0 {
 		return fmt.Errorf("ClusterProfile %v field Status.AccessProviders is empty", clusterProfile.Name)

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/argoproj/argo-cd/v3/common"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,12 +23,43 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
+const (
+	testClusterName      = "test-cluster"
+	testNamespace        = "default"
+	testServer           = "https://test-cluster.example.com"
+	testSecretName       = "cluster-test-cluster"
+	testOriginLabelValue = "default-test-cluster"
+	argocdNamespace      = "argocd"
+	environmentLabel     = "environment"
+	productionValue      = "production"
+)
+
 type failingDeleteClient struct {
 	client.Client
 }
 
 func (c *failingDeleteClient) Delete(_ context.Context, _ client.Object, _ ...client.DeleteOption) error {
 	return errors.New("unable to delete secret")
+}
+
+func newBuiltinProviderClusterProfile(labels map[string]string) *clusterinventory.ClusterProfile {
+	return &clusterinventory.ClusterProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testClusterName,
+			Namespace: testNamespace,
+			Labels:    labels,
+		},
+		Status: clusterinventory.ClusterProfileStatus{
+			AccessProviders: []clusterinventory.AccessProvider{
+				{
+					Name: "argo-cd-builtin-gcp",
+					Cluster: clientcmdv1.Cluster{
+						Server: testServer,
+					},
+				},
+			},
+		},
+	}
 }
 
 func TestClusterProfileReconciler(t *testing.T) {
@@ -103,6 +135,108 @@ func TestClusterProfileReconciler(t *testing.T) {
 			execProviderConfig := configMap["execProviderConfig"].(map[string]any)
 			assert.Equal(t, "client.authentication.k8s.io/v1", execProviderConfig["apiVersion"])
 			assert.Equal(t, "./bin/auth-provider-plugin", execProviderConfig["command"])
+		})
+
+		t.Run("should propagate ClusterProfile labels to the generated secret", func(t *testing.T) {
+			clusterProfile := newBuiltinProviderClusterProfile(map[string]string{
+				environmentLabel: productionValue,
+				"team":           "platform",
+			})
+			r := &ClusterProfileReconciler{
+				Client:    fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile).Build(),
+				Log:       logr.Discard(),
+				Scheme:    scheme,
+				Namespace: argocdNamespace,
+			}
+			req := reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      testClusterName,
+					Namespace: testNamespace,
+				},
+			}
+
+			_, err := r.Reconcile(context.Background(), req)
+
+			require.NoError(t, err)
+			var secret corev1.Secret
+			err = r.Get(context.Background(), types.NamespacedName{Name: testSecretName, Namespace: argocdNamespace}, &secret)
+			require.NoError(t, err)
+			assert.Equal(t, productionValue, secret.Labels[environmentLabel])
+			assert.Equal(t, "platform", secret.Labels["team"])
+			assert.Equal(t, common.LabelValueSecretTypeCluster, secret.Labels[common.LabelKeySecretType])
+			assert.Equal(t, testOriginLabelValue, secret.Labels[clusterProfileOriginLabel])
+		})
+
+		t.Run("should protect controller-owned secret labels from ClusterProfile labels", func(t *testing.T) {
+			clusterProfile := newBuiltinProviderClusterProfile(map[string]string{
+				common.LabelKeySecretType: "not-cluster",
+				clusterProfileOriginLabel: "other-origin",
+				environmentLabel:          productionValue,
+			})
+			r := &ClusterProfileReconciler{
+				Client:    fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile).Build(),
+				Log:       logr.Discard(),
+				Scheme:    scheme,
+				Namespace: argocdNamespace,
+			}
+			req := reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      testClusterName,
+					Namespace: testNamespace,
+				},
+			}
+
+			_, err := r.Reconcile(context.Background(), req)
+
+			require.NoError(t, err)
+			var secret corev1.Secret
+			err = r.Get(context.Background(), types.NamespacedName{Name: testSecretName, Namespace: argocdNamespace}, &secret)
+			require.NoError(t, err)
+			assert.Equal(t, productionValue, secret.Labels[environmentLabel])
+			assert.Equal(t, common.LabelValueSecretTypeCluster, secret.Labels[common.LabelKeySecretType])
+			assert.Equal(t, testOriginLabelValue, secret.Labels[clusterProfileOriginLabel])
+		})
+
+		t.Run("should update secret labels when ClusterProfile labels change", func(t *testing.T) {
+			clusterProfile := newBuiltinProviderClusterProfile(map[string]string{
+				environmentLabel: "staging",
+				"team":           "platform",
+			})
+			r := &ClusterProfileReconciler{
+				Client:    fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile).Build(),
+				Log:       logr.Discard(),
+				Scheme:    scheme,
+				Namespace: argocdNamespace,
+			}
+			req := reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      testClusterName,
+					Namespace: testNamespace,
+				},
+			}
+
+			_, err := r.Reconcile(context.Background(), req)
+			require.NoError(t, err)
+
+			updatedClusterProfile := &clusterinventory.ClusterProfile{}
+			err = r.Get(context.Background(), req.NamespacedName, updatedClusterProfile)
+			require.NoError(t, err)
+			updatedClusterProfile.Labels = map[string]string{
+				environmentLabel: productionValue,
+			}
+			err = r.Update(context.Background(), updatedClusterProfile)
+			require.NoError(t, err)
+
+			_, err = r.Reconcile(context.Background(), req)
+
+			require.NoError(t, err)
+			var secret corev1.Secret
+			err = r.Get(context.Background(), types.NamespacedName{Name: testSecretName, Namespace: argocdNamespace}, &secret)
+			require.NoError(t, err)
+			assert.Equal(t, productionValue, secret.Labels[environmentLabel])
+			assert.NotContains(t, secret.Labels, "team")
+			assert.Equal(t, common.LabelValueSecretTypeCluster, secret.Labels[common.LabelKeySecretType])
+			assert.Equal(t, testOriginLabelValue, secret.Labels[clusterProfileOriginLabel])
 		})
 
 		t.Run("should update the secret when the ClusterProfile is updated", func(t *testing.T) {

@@ -41,7 +41,7 @@ The controller will also update the `ClusterProfile`'s status to include the `Se
 
 These `ClusterProfile` resources may be synced automatically by a cluster manager or created manually. The `ClusterProfile` CRD from the [Cluster Inventory API](https://github.com/kubernetes-sigs/cluster-inventory-api) is automatically installed when you deploy the standalone controller.
 
-When running as a standalone controller, it watches for `ClusterProfile` objects and generates `Secret`s for Argo CD. The generated `Secret`s will be labeled with `argocd.argoproj.io/secret-type: cluster` to identify them as cluster secrets, and `argocd.argoproj.io/cluster-profile-origin` with the name of the `ClusterProfile` that they were generated from.
+When running as a standalone controller, it watches for `ClusterProfile` objects and generates `Secret`s for Argo CD. The generated `Secret`s are labeled with `argocd.argoproj.io/secret-type: cluster` and `argocd.argoproj.io/cluster-profile-origin`, and also include labels from the source `ClusterProfile`.
 
 
 ### Authentication
