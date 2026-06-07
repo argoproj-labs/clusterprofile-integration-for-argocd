@@ -93,7 +93,10 @@ func (r *ClusterProfileReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 }
 
 // pruneSecret handles the deletion of the Secret associated with a ClusterProfile.
-func (r *ClusterProfileReconciler) pruneSecret(ctx context.Context, clusterProfile *clusterinventory.ClusterProfile) error {
+func (r *ClusterProfileReconciler) pruneSecret(
+	ctx context.Context,
+	clusterProfile *clusterinventory.ClusterProfile,
+) error {
 	log := r.Log.WithValues("clusterprofile", clusterProfile.Name)
 
 	// If the finalizer is not present, the deletion logic has already been handled.
@@ -127,12 +130,18 @@ func (r *ClusterProfileReconciler) pruneSecret(ctx context.Context, clusterProfi
 }
 
 // mutateSecret populates the secret with data from the ClusterProfile.
-func (r *ClusterProfileReconciler) mutateSecret(secret *corev1.Secret, clusterProfile *clusterinventory.ClusterProfile) error {
+func (r *ClusterProfileReconciler) mutateSecret(
+	secret *corev1.Secret,
+	clusterProfile *clusterinventory.ClusterProfile,
+) error {
 	// Set labels on the secret to identify it as a cluster secret and link it to the ClusterProfile.
-	secret.Labels = map[string]string{
-		common.LabelKeySecretType: common.LabelValueSecretTypeCluster,
-		clusterProfileOriginLabel: fmt.Sprintf("%s-%s", clusterProfile.Namespace, clusterProfile.Name),
+	labels := make(map[string]string, len(clusterProfile.Labels)+2)
+	for key, value := range clusterProfile.Labels {
+		labels[key] = value
 	}
+	labels[common.LabelKeySecretType] = common.LabelValueSecretTypeCluster
+	labels[clusterProfileOriginLabel] = fmt.Sprintf("%s-%s", clusterProfile.Namespace, clusterProfile.Name)
+	secret.Labels = labels
 
 	if len(clusterProfile.Status.AccessProviders) == 0 {
 		return fmt.Errorf("ClusterProfile %v field Status.AccessProviders is empty", clusterProfile.Name)
@@ -165,7 +174,10 @@ func (r *ClusterProfileReconciler) mutateSecret(secret *corev1.Secret, clusterPr
 		return nil
 	}
 	if r.AccessProviders == nil {
-		return fmt.Errorf("ClusterProfileReconciler AccessProviders not initialized. Required for custom config for ClusterProfile: %v", clusterProfile.Name)
+		return fmt.Errorf(
+			"ClusterProfileReconciler AccessProviders not initialized. Required for custom config for ClusterProfile: %v",
+			clusterProfile.Name,
+		)
 	}
 
 	// If using custom access providers, build the kubeconfig.
@@ -191,7 +203,11 @@ func (r *ClusterProfileReconciler) mutateSecret(secret *corev1.Secret, clusterPr
 		args := make([]string, len(config.ExecProvider.Args))
 		for i, arg := range config.ExecProvider.Args {
 			replaced := strings.ReplaceAll(arg, "{{ .ClusterProfileName }}", clusterProfile.Name)
-			replaced = strings.ReplaceAll(replaced, "{{ .ClusterProfileServer }}", clusterProfile.Status.AccessProviders[0].Cluster.Server)
+			replaced = strings.ReplaceAll(
+				replaced,
+				"{{ .ClusterProfileServer }}",
+				clusterProfile.Status.AccessProviders[0].Cluster.Server,
+			)
 			args[i] = replaced
 		}
 		apiConfig.ExecProviderConfig = &v1alpha1.ExecProviderConfig{

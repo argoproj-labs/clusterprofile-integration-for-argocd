@@ -154,14 +154,48 @@ func NewCommand() *cobra.Command {
 	clientConfig = cli.AddKubectlFlagsToCmd(&command)
 	command.Flags().StringVar(&metricsAddr, "metrics-addr", ":8080", "The address the metric endpoint binds to.")
 	command.Flags().StringVar(&probeAddr, "probe-addr", ":8081", "The address the probe endpoint binds to.")
-	command.Flags().BoolVar(&enableLeaderElection, "enable-leader-election", env.ParseBoolFromEnv("ARGOCD_CLUSTERPROFILE_CONTROLLER_ENABLE_LEADER_ELECTION", false),
-		"Enable leader election for controller manager. ")
-	command.Flags().StringSliceVar(&clusterProfileNamespaces, "cluster-profile-namespaces", env.StringsFromEnv("ARGOCD_CLUSTERPROFILE_CONTROLLER_NAMESPACES", []string{}, ","), "Argo CD cluster profile namespaces")
-	command.Flags().BoolVar(&debugLog, "debug", env.ParseBoolFromEnv("ARGOCD_CLUSTERPROFILE_CONTROLLER_DEBUG", false), "Print debug logs. Takes precedence over loglevel")
-	command.Flags().StringVar(&cmdutil.LogFormat, "logformat", env.StringFromEnv("ARGOCD_CLUSTERPROFILE_CONTROLLER_LOGFORMAT", "json"), "Set the logging format. One of: json|text")
-	command.Flags().StringVar(&cmdutil.LogLevel, "loglevel", env.StringFromEnv("ARGOCD_CLUSTERPROFILE_CONTROLLER_LOGLEVEL", "info"), "Set the logging level. One of: debug|info|warn|error")
-	command.Flags().BoolVar(&dryRun, "dry-run", env.ParseBoolFromEnv("ARGOCD_CLUSTERPROFILE_CONTROLLER_DRY_RUN", false), "Enable dry run mode")
-	command.Flags().StringVar(&clusterProfileProvidersFile, "cluster-profile-providers-file", env.StringFromEnv("ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTER_PROFILE_PROVIDERS_FILE", ""), "The path to the cluster profile providers file.")
+	command.Flags().BoolVar(
+		&enableLeaderElection,
+		"enable-leader-election",
+		env.ParseBoolFromEnv("ARGOCD_CLUSTERPROFILE_CONTROLLER_ENABLE_LEADER_ELECTION", false),
+		"Enable leader election for controller manager. ",
+	)
+	command.Flags().StringSliceVar(
+		&clusterProfileNamespaces,
+		"cluster-profile-namespaces",
+		env.StringsFromEnv("ARGOCD_CLUSTERPROFILE_CONTROLLER_NAMESPACES", []string{}, ","),
+		"Argo CD cluster profile namespaces",
+	)
+	command.Flags().BoolVar(
+		&debugLog,
+		"debug",
+		env.ParseBoolFromEnv("ARGOCD_CLUSTERPROFILE_CONTROLLER_DEBUG", false),
+		"Print debug logs. Takes precedence over loglevel",
+	)
+	command.Flags().StringVar(
+		&cmdutil.LogFormat,
+		"logformat",
+		env.StringFromEnv("ARGOCD_CLUSTERPROFILE_CONTROLLER_LOGFORMAT", "json"),
+		"Set the logging format. One of: json|text",
+	)
+	command.Flags().StringVar(
+		&cmdutil.LogLevel,
+		"loglevel",
+		env.StringFromEnv("ARGOCD_CLUSTERPROFILE_CONTROLLER_LOGLEVEL", "info"),
+		"Set the logging level. One of: debug|info|warn|error",
+	)
+	command.Flags().BoolVar(
+		&dryRun,
+		"dry-run",
+		env.ParseBoolFromEnv("ARGOCD_CLUSTERPROFILE_CONTROLLER_DRY_RUN", false),
+		"Enable dry run mode",
+	)
+	command.Flags().StringVar(
+		&clusterProfileProvidersFile,
+		"cluster-profile-providers-file",
+		env.StringFromEnv("ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTER_PROFILE_PROVIDERS_FILE", ""),
+		"The path to the cluster profile providers file.",
+	)
 
 	return &command
 }

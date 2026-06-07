@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/argoproj/argo-cd/v3/common"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,12 +23,66 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
+const (
+	testClusterName      = "test-cluster"
+	testNamespace        = "default"
+	testServer           = "https://test-cluster.example.com"
+	testSecretName       = "cluster-test-cluster"
+	testOriginLabelValue = "default-test-cluster"
+	testProviderName     = "auth-provider"
+	argocdNamespace      = "argocd"
+	environmentLabel     = "environment"
+	productionValue      = "production"
+)
+
 type failingDeleteClient struct {
 	client.Client
 }
 
 func (c *failingDeleteClient) Delete(_ context.Context, _ client.Object, _ ...client.DeleteOption) error {
 	return errors.New("unable to delete secret")
+}
+
+func newBuiltinProviderClusterProfile(labels map[string]string) *clusterinventory.ClusterProfile {
+	return &clusterinventory.ClusterProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testClusterName,
+			Namespace: testNamespace,
+			Labels:    labels,
+		},
+		Status: clusterinventory.ClusterProfileStatus{
+			AccessProviders: []clusterinventory.AccessProvider{
+				{
+					Name: "argo-cd-builtin-gcp",
+					Cluster: clientcmdv1.Cluster{
+						Server: testServer,
+					},
+				},
+			},
+		},
+	}
+}
+
+func writeProvidersFile(t *testing.T) string {
+	t.Helper()
+
+	file, err := os.CreateTemp(t.TempDir(), "providers.json")
+	require.NoError(t, err)
+	_, err = file.WriteString(`{
+		"providers": [
+			{
+				"name": "auth-provider",
+				"execConfig": {
+					"apiVersion": "client.authentication.k8s.io/v1",
+					"command": "./bin/auth-provider-plugin"
+				}
+			}
+		]
+	}`)
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+
+	return file.Name()
 }
 
 func TestClusterProfileReconciler(t *testing.T) {
@@ -37,34 +92,19 @@ func TestClusterProfileReconciler(t *testing.T) {
 
 	t.Run("Reconcile", func(t *testing.T) {
 		t.Run("should create a secret when a new ClusterProfile is created", func(t *testing.T) {
-			// Create a temporary file with the provider config
-			file, err := os.CreateTemp(t.TempDir(), "providers.json")
-			require.NoError(t, err)
-			defer os.Remove(file.Name())
-			_, err = file.WriteString(`{
-				"providers": [
-					{
-						"name": "auth-provider",
-						"execConfig": {
-							"apiVersion": "client.authentication.k8s.io/v1",
-							"command": "./bin/auth-provider-plugin"
-						}
-					}
-				]
-			}`)
-			require.NoError(t, err)
+			providersFile := writeProvidersFile(t)
 
 			clusterProfile := &clusterinventory.ClusterProfile{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-cluster",
-					Namespace: "default",
+					Name:      testClusterName,
+					Namespace: testNamespace,
 				},
 				Status: clusterinventory.ClusterProfileStatus{
 					AccessProviders: []clusterinventory.AccessProvider{
 						{
-							Name: "auth-provider",
+							Name: testProviderName,
 							Cluster: clientcmdv1.Cluster{
-								Server: "https://test-cluster.example.com",
+								Server: testServer,
 							},
 						},
 					},
@@ -74,29 +114,29 @@ func TestClusterProfileReconciler(t *testing.T) {
 				Client:                      fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile).Build(),
 				Log:                         logr.Discard(),
 				Scheme:                      scheme,
-				Namespace:                   "argocd",
-				ClusterProfileProvidersFile: file.Name(),
+				Namespace:                   argocdNamespace,
+				ClusterProfileProvidersFile: providersFile,
 			}
 			require.NoError(t, r.loadClusterProfileProviders())
 			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Name:      "test-cluster",
-					Namespace: "default",
+					Name:      testClusterName,
+					Namespace: testNamespace,
 				},
 			}
 
-			_, err = r.Reconcile(context.Background(), req)
+			_, err := r.Reconcile(context.Background(), req)
 
 			require.NoError(t, err)
 			var secret corev1.Secret
-			err = r.Get(context.Background(), types.NamespacedName{Name: "cluster-test-cluster", Namespace: "argocd"}, &secret)
+			err = r.Get(context.Background(), types.NamespacedName{Name: testSecretName, Namespace: argocdNamespace}, &secret)
 			require.NoError(t, err)
-			assert.Equal(t, "cluster-test-cluster", secret.Name)
-			assert.Equal(t, "argocd", secret.Namespace)
+			assert.Equal(t, testSecretName, secret.Name)
+			assert.Equal(t, argocdNamespace, secret.Namespace)
 			assert.Equal(t, "cluster", secret.Labels["argocd.argoproj.io/secret-type"])
-			assert.Equal(t, "default-test-cluster", secret.Labels["argocd.argoproj.io/cluster-profile-origin"])
-			assert.Equal(t, "test-cluster", secret.StringData["name"])
-			assert.Equal(t, "https://test-cluster.example.com", secret.StringData["server"])
+			assert.Equal(t, testOriginLabelValue, secret.Labels["argocd.argoproj.io/cluster-profile-origin"])
+			assert.Equal(t, testClusterName, secret.StringData["name"])
+			assert.Equal(t, testServer, secret.StringData["server"])
 
 			var configMap map[string]any
 			require.NoError(t, json.Unmarshal([]byte(secret.StringData["config"]), &configMap))
@@ -105,35 +145,122 @@ func TestClusterProfileReconciler(t *testing.T) {
 			assert.Equal(t, "./bin/auth-provider-plugin", execProviderConfig["command"])
 		})
 
+		t.Run("should propagate ClusterProfile labels to the generated secret", func(t *testing.T) {
+			clusterProfile := newBuiltinProviderClusterProfile(map[string]string{
+				environmentLabel: productionValue,
+				"team":           "platform",
+			})
+			r := &ClusterProfileReconciler{
+				Client:    fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile).Build(),
+				Log:       logr.Discard(),
+				Scheme:    scheme,
+				Namespace: argocdNamespace,
+			}
+			req := reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      testClusterName,
+					Namespace: testNamespace,
+				},
+			}
+
+			_, err := r.Reconcile(context.Background(), req)
+
+			require.NoError(t, err)
+			var secret corev1.Secret
+			err = r.Get(context.Background(), types.NamespacedName{Name: testSecretName, Namespace: argocdNamespace}, &secret)
+			require.NoError(t, err)
+			assert.Equal(t, productionValue, secret.Labels[environmentLabel])
+			assert.Equal(t, "platform", secret.Labels["team"])
+			assert.Equal(t, common.LabelValueSecretTypeCluster, secret.Labels[common.LabelKeySecretType])
+			assert.Equal(t, testOriginLabelValue, secret.Labels[clusterProfileOriginLabel])
+		})
+
+		t.Run("should protect controller-owned secret labels from ClusterProfile labels", func(t *testing.T) {
+			clusterProfile := newBuiltinProviderClusterProfile(map[string]string{
+				common.LabelKeySecretType: "not-cluster",
+				clusterProfileOriginLabel: "other-origin",
+				environmentLabel:          productionValue,
+			})
+			r := &ClusterProfileReconciler{
+				Client:    fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile).Build(),
+				Log:       logr.Discard(),
+				Scheme:    scheme,
+				Namespace: argocdNamespace,
+			}
+			req := reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      testClusterName,
+					Namespace: testNamespace,
+				},
+			}
+
+			_, err := r.Reconcile(context.Background(), req)
+
+			require.NoError(t, err)
+			var secret corev1.Secret
+			err = r.Get(context.Background(), types.NamespacedName{Name: testSecretName, Namespace: argocdNamespace}, &secret)
+			require.NoError(t, err)
+			assert.Equal(t, productionValue, secret.Labels[environmentLabel])
+			assert.Equal(t, common.LabelValueSecretTypeCluster, secret.Labels[common.LabelKeySecretType])
+			assert.Equal(t, testOriginLabelValue, secret.Labels[clusterProfileOriginLabel])
+		})
+
+		t.Run("should update secret labels when ClusterProfile labels change", func(t *testing.T) {
+			clusterProfile := newBuiltinProviderClusterProfile(map[string]string{
+				environmentLabel: "staging",
+				"team":           "platform",
+			})
+			r := &ClusterProfileReconciler{
+				Client:    fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile).Build(),
+				Log:       logr.Discard(),
+				Scheme:    scheme,
+				Namespace: argocdNamespace,
+			}
+			req := reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      testClusterName,
+					Namespace: testNamespace,
+				},
+			}
+
+			_, err := r.Reconcile(context.Background(), req)
+			require.NoError(t, err)
+
+			updatedClusterProfile := &clusterinventory.ClusterProfile{}
+			err = r.Get(context.Background(), req.NamespacedName, updatedClusterProfile)
+			require.NoError(t, err)
+			updatedClusterProfile.Labels = map[string]string{
+				environmentLabel: productionValue,
+			}
+			err = r.Update(context.Background(), updatedClusterProfile)
+			require.NoError(t, err)
+
+			_, err = r.Reconcile(context.Background(), req)
+
+			require.NoError(t, err)
+			var secret corev1.Secret
+			err = r.Get(context.Background(), types.NamespacedName{Name: testSecretName, Namespace: argocdNamespace}, &secret)
+			require.NoError(t, err)
+			assert.Equal(t, productionValue, secret.Labels[environmentLabel])
+			assert.NotContains(t, secret.Labels, "team")
+			assert.Equal(t, common.LabelValueSecretTypeCluster, secret.Labels[common.LabelKeySecretType])
+			assert.Equal(t, testOriginLabelValue, secret.Labels[clusterProfileOriginLabel])
+		})
+
 		t.Run("should update the secret when the ClusterProfile is updated", func(t *testing.T) {
-			// Create a temporary file with the provider config
-			file, err := os.CreateTemp(t.TempDir(), "providers.json")
-			require.NoError(t, err)
-			defer os.Remove(file.Name())
-			_, err = file.WriteString(`{
-				"providers": [
-					{
-						"name": "auth-provider",
-						"execConfig": {
-							"apiVersion": "client.authentication.k8s.io/v1",
-							"command": "./bin/auth-provider-plugin"
-						}
-					}
-				]
-			}`)
-			require.NoError(t, err)
+			providersFile := writeProvidersFile(t)
 
 			clusterProfile := &clusterinventory.ClusterProfile{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-cluster",
-					Namespace: "default",
+					Name:      testClusterName,
+					Namespace: testNamespace,
 				},
 				Status: clusterinventory.ClusterProfileStatus{
 					AccessProviders: []clusterinventory.AccessProvider{
 						{
-							Name: "auth-provider",
+							Name: testProviderName,
 							Cluster: clientcmdv1.Cluster{
-								Server: "https://test-cluster.example.com",
+								Server: testServer,
 							},
 						},
 					},
@@ -143,18 +270,18 @@ func TestClusterProfileReconciler(t *testing.T) {
 				Client:                      fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile).Build(),
 				Log:                         logr.Discard(),
 				Scheme:                      scheme,
-				Namespace:                   "argocd",
-				ClusterProfileProvidersFile: file.Name(),
+				Namespace:                   argocdNamespace,
+				ClusterProfileProvidersFile: providersFile,
 			}
 			require.NoError(t, r.loadClusterProfileProviders())
 			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Name:      "test-cluster",
-					Namespace: "default",
+					Name:      testClusterName,
+					Namespace: testNamespace,
 				},
 			}
 
-			_, err = r.Reconcile(context.Background(), req)
+			_, err := r.Reconcile(context.Background(), req)
 			require.NoError(t, err)
 
 			// Update the ClusterProfile
@@ -169,7 +296,7 @@ func TestClusterProfileReconciler(t *testing.T) {
 			require.NoError(t, err)
 
 			var secret corev1.Secret
-			err = r.Get(context.Background(), types.NamespacedName{Name: "cluster-test-cluster", Namespace: "argocd"}, &secret)
+			err = r.Get(context.Background(), types.NamespacedName{Name: testSecretName, Namespace: argocdNamespace}, &secret)
 			require.NoError(t, err)
 			assert.Equal(t, "https://updated-cluster.example.com", secret.StringData["server"])
 		})
@@ -179,12 +306,12 @@ func TestClusterProfileReconciler(t *testing.T) {
 				Client:    fake.NewClientBuilder().WithScheme(scheme).Build(),
 				Log:       logr.Discard(),
 				Scheme:    scheme,
-				Namespace: "argocd",
+				Namespace: argocdNamespace,
 			}
 			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Name:      "test-cluster",
-					Namespace: "default",
+					Name:      testClusterName,
+					Namespace: testNamespace,
 				},
 			}
 
@@ -195,34 +322,19 @@ func TestClusterProfileReconciler(t *testing.T) {
 		})
 
 		t.Run("should add a finalizer if it is not present", func(t *testing.T) {
-			// Create a temporary file with the provider config
-			file, err := os.CreateTemp(t.TempDir(), "providers.json")
-			require.NoError(t, err)
-			defer os.Remove(file.Name())
-			_, err = file.WriteString(`{
-				"providers": [
-					{
-						"name": "auth-provider",
-						"execConfig": {
-							"apiVersion": "client.authentication.k8s.io/v1",
-							"command": "./bin/auth-provider-plugin"
-						}
-					}
-				]
-			}`)
-			require.NoError(t, err)
+			providersFile := writeProvidersFile(t)
 
 			clusterProfile := &clusterinventory.ClusterProfile{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-cluster",
-					Namespace: "default",
+					Name:      testClusterName,
+					Namespace: testNamespace,
 				},
 				Status: clusterinventory.ClusterProfileStatus{
 					AccessProviders: []clusterinventory.AccessProvider{
 						{
-							Name: "auth-provider",
+							Name: testProviderName,
 							Cluster: clientcmdv1.Cluster{
-								Server: "https://test-cluster.example.com",
+								Server: testServer,
 							},
 						},
 					},
@@ -232,18 +344,18 @@ func TestClusterProfileReconciler(t *testing.T) {
 				Client:                      fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile).Build(),
 				Log:                         logr.Discard(),
 				Scheme:                      scheme,
-				Namespace:                   "argocd",
-				ClusterProfileProvidersFile: file.Name(),
+				Namespace:                   argocdNamespace,
+				ClusterProfileProvidersFile: providersFile,
 			}
 			require.NoError(t, r.loadClusterProfileProviders())
 			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Name:      "test-cluster",
-					Namespace: "default",
+					Name:      testClusterName,
+					Namespace: testNamespace,
 				},
 			}
 
-			_, err = r.Reconcile(context.Background(), req)
+			_, err := r.Reconcile(context.Background(), req)
 
 			require.NoError(t, err)
 			var updatedClusterProfile clusterinventory.ClusterProfile
@@ -255,8 +367,8 @@ func TestClusterProfileReconciler(t *testing.T) {
 		t.Run("should return an error if AccessProviders is empty", func(t *testing.T) {
 			clusterProfile := &clusterinventory.ClusterProfile{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-cluster",
-					Namespace: "default",
+					Name:      testClusterName,
+					Namespace: testNamespace,
 				},
 				Status: clusterinventory.ClusterProfileStatus{
 					AccessProviders: []clusterinventory.AccessProvider{},
@@ -266,12 +378,12 @@ func TestClusterProfileReconciler(t *testing.T) {
 				Client:    fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile).Build(),
 				Log:       logr.Discard(),
 				Scheme:    scheme,
-				Namespace: "argocd",
+				Namespace: argocdNamespace,
 			}
 			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Name:      "test-cluster",
-					Namespace: "default",
+					Name:      testClusterName,
+					Namespace: testNamespace,
 				},
 			}
 
@@ -284,8 +396,8 @@ func TestClusterProfileReconciler(t *testing.T) {
 			now := metav1.NewTime(time.Now())
 			clusterProfile := &clusterinventory.ClusterProfile{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:              "test-cluster",
-					Namespace:         "default",
+					Name:              testClusterName,
+					Namespace:         testNamespace,
 					DeletionTimestamp: &now,
 					Finalizers:        []string{clusterProfileFinalizer},
 				},
@@ -294,12 +406,12 @@ func TestClusterProfileReconciler(t *testing.T) {
 				Client:    fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile).Build(),
 				Log:       logr.Discard(),
 				Scheme:    scheme,
-				Namespace: "argocd",
+				Namespace: argocdNamespace,
 			}
 			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Name:      "test-cluster",
-					Namespace: "default",
+					Name:      testClusterName,
+					Namespace: testNamespace,
 				},
 			}
 
@@ -313,28 +425,28 @@ func TestClusterProfileReconciler(t *testing.T) {
 			now := metav1.NewTime(time.Now())
 			clusterProfile := &clusterinventory.ClusterProfile{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:              "test-cluster",
-					Namespace:         "default",
+					Name:              testClusterName,
+					Namespace:         testNamespace,
 					DeletionTimestamp: &now,
 					Finalizers:        []string{clusterProfileFinalizer},
 				},
 			}
 			secret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "cluster-test-cluster",
-					Namespace: "argocd",
+					Name:      testSecretName,
+					Namespace: argocdNamespace,
 				},
 			}
 			r := &ClusterProfileReconciler{
 				Client:    fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile, secret).Build(),
 				Log:       logr.Discard(),
 				Scheme:    scheme,
-				Namespace: "argocd",
+				Namespace: argocdNamespace,
 			}
 			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Name:      "test-cluster",
-					Namespace: "default",
+					Name:      testClusterName,
+					Namespace: testNamespace,
 				},
 			}
 
@@ -342,7 +454,11 @@ func TestClusterProfileReconciler(t *testing.T) {
 
 			require.NoError(t, err)
 			var deletedSecret corev1.Secret
-			err = r.Get(context.Background(), types.NamespacedName{Name: "cluster-test-cluster", Namespace: "argocd"}, &deletedSecret)
+			err = r.Get(
+				context.Background(),
+				types.NamespacedName{Name: testSecretName, Namespace: argocdNamespace},
+				&deletedSecret,
+			)
 			assert.Error(t, err)
 		})
 
@@ -350,16 +466,16 @@ func TestClusterProfileReconciler(t *testing.T) {
 			now := metav1.NewTime(time.Now())
 			clusterProfile := &clusterinventory.ClusterProfile{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:              "test-cluster",
-					Namespace:         "default",
+					Name:              testClusterName,
+					Namespace:         testNamespace,
 					DeletionTimestamp: &now,
 					Finalizers:        []string{clusterProfileFinalizer},
 				},
 			}
 			secret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "cluster-test-cluster",
-					Namespace: "argocd",
+					Name:      testSecretName,
+					Namespace: argocdNamespace,
 				},
 			}
 			r := &ClusterProfileReconciler{
@@ -368,12 +484,12 @@ func TestClusterProfileReconciler(t *testing.T) {
 				},
 				Log:       logr.Discard(),
 				Scheme:    scheme,
-				Namespace: "argocd",
+				Namespace: argocdNamespace,
 			}
 			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Name:      "test-cluster",
-					Namespace: "default",
+					Name:      testClusterName,
+					Namespace: testNamespace,
 				},
 			}
 
