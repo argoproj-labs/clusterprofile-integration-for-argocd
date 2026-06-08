@@ -13,11 +13,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientcmdv1 "k8s.io/client-go/tools/clientcmd/api/v1"
 	clusterinventory "sigs.k8s.io/cluster-inventory-api/apis/v1alpha1"
+	"sigs.k8s.io/cluster-inventory-api/pkg/access"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -29,7 +31,8 @@ const (
 	testServer           = "https://test-cluster.example.com"
 	testSecretName       = "cluster-test-cluster"
 	testOriginLabelValue = "default-test-cluster"
-	testProviderName     = "auth-provider"
+	testProviderName     = "secretreader"
+	testProviderCommand  = "/plugins/secretreader/bin/secretreader-plugin"
 	argocdNamespace      = "argocd"
 	environmentLabel     = "environment"
 	productionValue      = "production"
@@ -66,19 +69,31 @@ func newBuiltinProviderClusterProfile(labels map[string]string) *clusterinventor
 func writeProvidersFile(t *testing.T) string {
 	t.Helper()
 
+	execConfig := map[string]any{
+		"apiVersion":         "client.authentication.k8s.io/v1",
+		"command":            testProviderCommand,
+		"provideClusterInfo": true,
+	}
+	providerConfig := map[string]any{
+		"providers": []map[string]any{
+			{
+				secretDataNameKey: testProviderName,
+				"execConfig":      execConfig,
+			},
+		},
+	}
+	data, err := json.Marshal(providerConfig)
+	require.NoError(t, err)
+
+	return writeProviderConfigFile(t, data)
+}
+
+func writeProviderConfigFile(t *testing.T, data []byte) string {
+	t.Helper()
+
 	file, err := os.CreateTemp(t.TempDir(), "providers.json")
 	require.NoError(t, err)
-	_, err = file.WriteString(`{
-		"providers": [
-			{
-				"name": "auth-provider",
-				"execConfig": {
-					"apiVersion": "client.authentication.k8s.io/v1",
-					"command": "./bin/auth-provider-plugin"
-				}
-			}
-		]
-	}`)
+	_, err = file.Write(data)
 	require.NoError(t, err)
 	require.NoError(t, file.Close())
 
@@ -105,19 +120,27 @@ func TestClusterProfileReconciler(t *testing.T) {
 							Name: testProviderName,
 							Cluster: clientcmdv1.Cluster{
 								Server: testServer,
+								Extensions: []clientcmdv1.NamedExtension{
+									{
+										Name: "client.authentication.k8s.io/exec",
+										Extension: runtime.RawExtension{
+											Raw: []byte(`{"clusterName":"test-cluster"}`),
+										},
+									},
+								},
 							},
 						},
 					},
 				},
 			}
 			r := &ClusterProfileReconciler{
-				Client:                      fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile).Build(),
-				Log:                         logr.Discard(),
-				Scheme:                      scheme,
-				Namespace:                   argocdNamespace,
-				ClusterProfileProvidersFile: providersFile,
+				Client:                     fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile).Build(),
+				Log:                        logr.Discard(),
+				Scheme:                     scheme,
+				Namespace:                  argocdNamespace,
+				ClusterProfileProviderFile: providersFile,
 			}
-			require.NoError(t, r.loadClusterProfileProviders())
+			require.NoError(t, r.loadClusterProfileProviderFile())
 			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      testClusterName,
@@ -135,14 +158,126 @@ func TestClusterProfileReconciler(t *testing.T) {
 			assert.Equal(t, argocdNamespace, secret.Namespace)
 			assert.Equal(t, "cluster", secret.Labels["argocd.argoproj.io/secret-type"])
 			assert.Equal(t, testOriginLabelValue, secret.Labels["argocd.argoproj.io/cluster-profile-origin"])
-			assert.Equal(t, testClusterName, secret.StringData["name"])
-			assert.Equal(t, testServer, secret.StringData["server"])
+			assert.Equal(t, testClusterName, secret.StringData[secretDataNameKey])
+			assert.Equal(t, testServer, secret.StringData[secretDataServerKey])
 
 			var configMap map[string]any
-			require.NoError(t, json.Unmarshal([]byte(secret.StringData["config"]), &configMap))
+			require.NoError(t, json.Unmarshal([]byte(secret.StringData[secretDataConfigKey]), &configMap))
 			execProviderConfig := configMap["execProviderConfig"].(map[string]any)
 			assert.Equal(t, "client.authentication.k8s.io/v1", execProviderConfig["apiVersion"])
-			assert.Equal(t, "./bin/auth-provider-plugin", execProviderConfig["command"])
+			assert.Equal(t, testProviderCommand, execProviderConfig["command"])
+			assert.Equal(t, true, execProviderConfig["provideClusterInfo"])
+			config := execProviderConfig["config"].(map[string]any)
+			assert.Equal(t, testClusterName, config["clusterName"])
+		})
+
+		t.Run("should not retain profile-sourced args between reconciles", func(t *testing.T) {
+			execConfig := map[string]any{
+				"apiVersion": "client.authentication.k8s.io/v1",
+				"command":    testProviderCommand,
+			}
+			providerConfig := map[string]any{
+				"providers": []map[string]any{
+					{
+						secretDataNameKey:             testProviderName,
+						"execConfig":                  execConfig,
+						"profileSourcedCLIArgsPolicy": access.ProfileSourcedCLIArgsPolicyAppend,
+					},
+				},
+			}
+			data, err := json.Marshal(providerConfig)
+			require.NoError(t, err)
+			providersFile := writeProviderConfigFile(t, data)
+
+			clusterProfile := &clusterinventory.ClusterProfile{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testClusterName,
+					Namespace: testNamespace,
+				},
+				Status: clusterinventory.ClusterProfileStatus{
+					AccessProviders: []clusterinventory.AccessProvider{
+						{
+							Name: testProviderName,
+							Cluster: clientcmdv1.Cluster{
+								Server: testServer,
+								Extensions: []clientcmdv1.NamedExtension{
+									{
+										Name: "clusterprofiles.multicluster.x-k8s.io/exec/additional-args",
+										Extension: runtime.RawExtension{
+											Raw: []byte(`["--cluster", "{{ .ClusterProfileName }}"]`),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+			r := &ClusterProfileReconciler{
+				Client:                     fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile).Build(),
+				Log:                        logr.Discard(),
+				Scheme:                     scheme,
+				Namespace:                  argocdNamespace,
+				ClusterProfileProviderFile: providersFile,
+			}
+			require.NoError(t, r.loadClusterProfileProviderFile())
+			req := reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      testClusterName,
+					Namespace: testNamespace,
+				},
+			}
+
+			_, err = r.Reconcile(context.Background(), req)
+			require.NoError(t, err)
+			_, err = r.Reconcile(context.Background(), req)
+			require.NoError(t, err)
+
+			var secret corev1.Secret
+			err = r.Get(context.Background(), types.NamespacedName{Name: testSecretName, Namespace: argocdNamespace}, &secret)
+			require.NoError(t, err)
+			var configMap map[string]any
+			require.NoError(t, json.Unmarshal([]byte(secret.StringData[secretDataConfigKey]), &configMap))
+			execProviderConfig := configMap["execProviderConfig"].(map[string]any)
+			assert.Equal(t, []any{"--cluster", testClusterName}, execProviderConfig["args"])
+		})
+
+		t.Run("should not create a builtin secret from deprecated CredentialProviders", func(t *testing.T) {
+			clusterProfile := &clusterinventory.ClusterProfile{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testClusterName,
+					Namespace: testNamespace,
+				},
+				Status: clusterinventory.ClusterProfileStatus{
+					CredentialProviders: []clusterinventory.CredentialProvider{
+						{
+							Name: "argo-cd-builtin-gcp",
+							Cluster: clientcmdv1.Cluster{
+								Server: testServer,
+							},
+						},
+					},
+				},
+			}
+			r := &ClusterProfileReconciler{
+				Client:    fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile).Build(),
+				Log:       logr.Discard(),
+				Scheme:    scheme,
+				Namespace: argocdNamespace,
+			}
+			req := reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      testClusterName,
+					Namespace: testNamespace,
+				},
+			}
+
+			_, err := r.Reconcile(context.Background(), req)
+
+			require.Error(t, err)
+			var secret corev1.Secret
+			err = r.Get(context.Background(), types.NamespacedName{Name: testSecretName, Namespace: argocdNamespace}, &secret)
+			assert.True(t, apierrors.IsNotFound(err))
 		})
 
 		t.Run("should propagate ClusterProfile labels to the generated secret", func(t *testing.T) {
@@ -267,13 +402,13 @@ func TestClusterProfileReconciler(t *testing.T) {
 				},
 			}
 			r := &ClusterProfileReconciler{
-				Client:                      fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile).Build(),
-				Log:                         logr.Discard(),
-				Scheme:                      scheme,
-				Namespace:                   argocdNamespace,
-				ClusterProfileProvidersFile: providersFile,
+				Client:                     fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile).Build(),
+				Log:                        logr.Discard(),
+				Scheme:                     scheme,
+				Namespace:                  argocdNamespace,
+				ClusterProfileProviderFile: providersFile,
 			}
-			require.NoError(t, r.loadClusterProfileProviders())
+			require.NoError(t, r.loadClusterProfileProviderFile())
 			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      testClusterName,
@@ -298,7 +433,7 @@ func TestClusterProfileReconciler(t *testing.T) {
 			var secret corev1.Secret
 			err = r.Get(context.Background(), types.NamespacedName{Name: testSecretName, Namespace: argocdNamespace}, &secret)
 			require.NoError(t, err)
-			assert.Equal(t, "https://updated-cluster.example.com", secret.StringData["server"])
+			assert.Equal(t, "https://updated-cluster.example.com", secret.StringData[secretDataServerKey])
 		})
 
 		t.Run("should not return an error if the ClusterProfile is not found", func(t *testing.T) {
@@ -341,13 +476,13 @@ func TestClusterProfileReconciler(t *testing.T) {
 				},
 			}
 			r := &ClusterProfileReconciler{
-				Client:                      fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile).Build(),
-				Log:                         logr.Discard(),
-				Scheme:                      scheme,
-				Namespace:                   argocdNamespace,
-				ClusterProfileProvidersFile: providersFile,
+				Client:                     fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile).Build(),
+				Log:                        logr.Discard(),
+				Scheme:                     scheme,
+				Namespace:                  argocdNamespace,
+				ClusterProfileProviderFile: providersFile,
 			}
-			require.NoError(t, r.loadClusterProfileProviders())
+			require.NoError(t, r.loadClusterProfileProviderFile())
 			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      testClusterName,
@@ -364,7 +499,7 @@ func TestClusterProfileReconciler(t *testing.T) {
 			assert.Contains(t, updatedClusterProfile.Finalizers, clusterProfileFinalizer)
 		})
 
-		t.Run("should return an error if AccessProviders is empty", func(t *testing.T) {
+		t.Run("should return an error if access providers are empty", func(t *testing.T) {
 			clusterProfile := &clusterinventory.ClusterProfile{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testClusterName,
@@ -502,21 +637,32 @@ func TestClusterProfileReconciler(t *testing.T) {
 	})
 }
 
-func TestLoadClusterProfileProviders(t *testing.T) {
-	t.Run("should not return an error if the providers file is not specified", func(t *testing.T) {
+func TestLoadClusterProfileProviderFile(t *testing.T) {
+	t.Run("should not return an error if the provider file is not specified", func(t *testing.T) {
 		r := &ClusterProfileReconciler{
 			Log: logr.Discard(),
 		}
-		err := r.loadClusterProfileProviders()
+		err := r.loadClusterProfileProviderFile()
 		assert.NoError(t, err)
 	})
 
-	t.Run("should return an error if the providers file does not exist", func(t *testing.T) {
+	t.Run("should return an error if the provider file does not exist", func(t *testing.T) {
 		r := &ClusterProfileReconciler{
-			Log:                         logr.Discard(),
-			ClusterProfileProvidersFile: "non-existent-file",
+			Log:                        logr.Discard(),
+			ClusterProfileProviderFile: "non-existent-file",
 		}
-		err := r.loadClusterProfileProviders()
+		err := r.loadClusterProfileProviderFile()
 		assert.Error(t, err)
 	})
+}
+
+func TestNewCommandClusterProfileProviderFileFlag(t *testing.T) {
+	t.Setenv("ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTERPROFILE_PROVIDER_FILE", "/tmp/access.json")
+
+	command := NewCommand()
+	providerFileFlag := command.Flags().Lookup("clusterprofile-provider-file")
+
+	require.NotNil(t, providerFileFlag)
+	assert.Equal(t, "/tmp/access.json", providerFileFlag.DefValue)
+	assert.Nil(t, command.Flags().Lookup("cluster-profile-providers-file"))
 }
