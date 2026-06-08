@@ -3,9 +3,18 @@
 set -euo pipefail
 
 ARGOCD_CHART_VERSION="${ARGOCD_CHART_VERSION:-9.5.19}"
+# TODO: Once the first Argo CD release containing 6d92e177b45fcd51bde0dbc169f7f923acc9a79d
+# is available, replace the latest default with that released version and document it as the minimum
+# supported Argo CD version for ClusterProfile exec config propagation.
+ARGOCD_IMAGE_REPOSITORY="${ARGOCD_IMAGE_REPOSITORY:-quay.io/argoproj/argocd}"
+ARGOCD_IMAGE_TAG="${ARGOCD_IMAGE_TAG:-latest}"
+ARGOCD_IMAGE_PULL_POLICY="${ARGOCD_IMAGE_PULL_POLICY:-Always}"
 GUESTBOOK_REVISION="${GUESTBOOK_REVISION:-8088f4c0d970abb09e250248cc97e35623447cb5}"
 E2E_IMG="${E2E_IMG:-controller:dev}"
 E2E_PREFIX="${E2E_PREFIX:-cpia-e2e-$$}"
+KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-}"
+SECRETREADER_IMAGE="${SECRETREADER_IMAGE:-registry.k8s.io/cluster-inventory-api/secretreader:v0.1.2}"
+SECRETREADER_COMMAND="${SECRETREADER_COMMAND:-/plugins/secretreader/bin/secretreader-plugin}"
 HUB_CLUSTER="${HUB_CLUSTER:-${E2E_PREFIX}-hub}"
 SPOKE_CLUSTER="${SPOKE_CLUSTER:-${E2E_PREFIX}-spoke}"
 ARGOCD_NS="${ARGOCD_NS:-argocd}"
@@ -28,6 +37,15 @@ require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "required command not found: $1" >&2
     exit 1
+  fi
+}
+
+create_kind_cluster() {
+  local cluster_name="$1"
+  if [ -n "${KIND_NODE_IMAGE}" ]; then
+    kind create cluster --name "${cluster_name}" --image "${KIND_NODE_IMAGE}" --wait 120s
+  else
+    kind create cluster --name "${cluster_name}" --wait 120s
   fi
 }
 
@@ -114,9 +132,13 @@ cd "${REPO_ROOT}"
 
 log "creating kind clusters"
 HUB_CREATED=1
-kind create cluster --name "${HUB_CLUSTER}" --wait 120s
+create_kind_cluster "${HUB_CLUSTER}"
+if ! kubectl --context "kind-${HUB_CLUSTER}" explain pod.spec.volumes.image >/dev/null 2>&1; then
+  echo "kind cluster ${HUB_CLUSTER} does not support Kubernetes ImageVolume" >&2
+  exit 1
+fi
 SPOKE_CREATED=1
-kind create cluster --name "${SPOKE_CLUSTER}" --wait 120s
+create_kind_cluster "${SPOKE_CLUSTER}"
 
 log "loading controller image ${E2E_IMG}"
 kind load docker-image "${E2E_IMG}" --name "${HUB_CLUSTER}"
@@ -125,6 +147,9 @@ log "installing Argo CD chart ${ARGOCD_CHART_VERSION} and ClusterProfile control
 helm --kube-context "kind-${HUB_CLUSTER}" upgrade --install argocd argo-cd \
   --repo https://argoproj.github.io/argo-helm \
   --version "${ARGOCD_CHART_VERSION}" \
+  --set "global.image.repository=${ARGOCD_IMAGE_REPOSITORY}" \
+  --set "global.image.tag=${ARGOCD_IMAGE_TAG}" \
+  --set "global.image.imagePullPolicy=${ARGOCD_IMAGE_PULL_POLICY}" \
   --namespace "${ARGOCD_NS}" \
   --create-namespace \
   --wait \
@@ -171,40 +196,102 @@ kubectl --context "kind-${SPOKE_CLUSTER}" -n kube-system wait --for=jsonpath='{.
 SPOKE_IP="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${SPOKE_CLUSTER}-control-plane")"
 SPOKE_CA="$(kubectl --context "kind-${SPOKE_CLUSTER}" config view --raw --minify --flatten -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')"
 SPOKE_TOKEN="$(kubectl --context "kind-${SPOKE_CLUSTER}" -n kube-system get secret argocd-manager-token -o jsonpath='{.data.token}' | base64 -d)"
+APP_CONTROLLER_SA="$(
+  kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" get sts/argocd-application-controller \
+    -o jsonpath='{.spec.template.spec.serviceAccountName}'
+)"
+APP_CONTROLLER_SA="${APP_CONTROLLER_SA:-argocd-application-controller}"
+SERVER_SA="$(
+  kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" get deploy/argocd-server \
+    -o jsonpath='{.spec.template.spec.serviceAccountName}'
+)"
+SERVER_SA="${SERVER_SA:-argocd-server}"
 
-log "mounting Argo CD exec plugin and ClusterProfile provider config"
-kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" create configmap argocd-custom-auth-plugin \
-  --from-literal=get-token.sh="#!/bin/sh
-cat <<EOF
-{
-  \"apiVersion\": \"client.authentication.k8s.io/v1beta1\",
-  \"kind\": \"ExecCredential\",
-  \"status\": {
-    \"token\": \"${SPOKE_TOKEN}\"
-  }
-}
+log "creating secretreader token Secret and RBAC"
+kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" create secret generic "${CP_NAME}" \
+  --from-literal=token="${SPOKE_TOKEN}" \
+  --dry-run=client -o yaml | kubectl --context "kind-${HUB_CLUSTER}" apply -f -
+
+kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: argocd-secretreader
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    resourceNames:
+      - ${CP_NAME}
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: argocd-secretreader
+subjects:
+  - kind: ServiceAccount
+    name: ${APP_CONTROLLER_SA}
+    namespace: ${ARGOCD_NS}
+  - kind: ServiceAccount
+    name: ${SERVER_SA}
+    namespace: ${ARGOCD_NS}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: argocd-secretreader
 EOF
-" \
-  --dry-run=client -o yaml | kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" apply -f -
 
-kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" patch sts/argocd-application-controller --type strategic --patch '
+log "mounting secretreader plugin and ClusterProfile provider config"
+kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" patch sts/argocd-application-controller --type strategic --patch "
 spec:
   template:
     spec:
       volumes:
-        - name: auth-script
-          configMap:
-            name: argocd-custom-auth-plugin
-            defaultMode: 0755
+        - name: secretreader-plugin
+          image:
+            reference: ${SECRETREADER_IMAGE}
+            pullPolicy: IfNotPresent
       containers:
         - name: application-controller
           volumeMounts:
-            - name: auth-script
-              mountPath: /usr/local/bin/custom-auth'
+            - name: secretreader-plugin
+              mountPath: /plugins/secretreader
+              readOnly: true"
+kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" patch deploy/argocd-server --type strategic --patch "
+spec:
+  template:
+    spec:
+      volumes:
+        - name: secretreader-plugin
+          image:
+            reference: ${SECRETREADER_IMAGE}
+            pullPolicy: IfNotPresent
+      containers:
+        - name: server
+          volumeMounts:
+            - name: secretreader-plugin
+              mountPath: /plugins/secretreader
+              readOnly: true"
 
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" create secret generic cp-creds-secret \
-  --from-literal=cp-creds.json='{"providers":[{"name":"hub-provider","execConfig":{"command":"/usr/local/bin/custom-auth/get-token.sh","apiVersion":"client.authentication.k8s.io/v1beta1"}}]}' \
-  --dry-run=client -o yaml | kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" apply -f -
+  --from-file=cp-creds.json=/dev/stdin \
+  --dry-run=client -o yaml <<EOF | kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" apply -f -
+{
+  "providers": [
+    {
+      "name": "secretreader",
+      "execConfig": {
+        "command": "${SECRETREADER_COMMAND}",
+        "apiVersion": "client.authentication.k8s.io/v1",
+        "provideClusterInfo": true
+      }
+    }
+  ]
+}
+EOF
 
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" patch deploy/argocd-clusterprofile-controller --type strategic --patch '
 spec:
@@ -221,9 +308,10 @@ spec:
               mountPath: /app/cp-creds
           args:
             - "/manager"
-            - "--cluster-profile-providers-file=/app/cp-creds/cp-creds.json"'
+            - "--clusterprofile-provider-file=/app/cp-creds/cp-creds.json"'
 
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" rollout status sts/argocd-application-controller --timeout=300s
+kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" rollout status deploy/argocd-server --timeout=300s
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" rollout status deploy/argocd-clusterprofile-controller --timeout=300s
 
 log "creating ClusterProfile"
@@ -241,8 +329,32 @@ spec:
     name: manual
   displayName: Spoke Cluster Full E2E
 EOF
+STATUS_PATCH="$(cat <<EOF
+{
+  "status": {
+    "accessProviders": [
+      {
+        "name": "secretreader",
+        "cluster": {
+          "server": "https://${SPOKE_IP}:6443",
+          "certificate-authority-data": "${SPOKE_CA}",
+          "extensions": [
+            {
+              "name": "client.authentication.k8s.io/exec",
+              "extension": {
+                "clusterName": "${CP_NAME}"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
+EOF
+)"
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" patch clusterprofile "${CP_NAME}" --subresource=status --type=merge \
-  -p '{"status":{"accessProviders":[{"name":"hub-provider","cluster":{"server":"https://'"${SPOKE_IP}"':6443","certificate-authority-data":"'"${SPOKE_CA}"'"}}]}}'
+  -p "${STATUS_PATCH}"
 
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" wait --for=jsonpath='{.metadata.labels.environment}'=e2e "secret/${SECRET_NAME}" --timeout=120s
 SECRET_JSON="$(kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" get secret "${SECRET_NAME}" -o json)"
@@ -253,7 +365,11 @@ test "$(printf '%s' "${SECRET_JSON}" | jq -r '.metadata.labels["argocd.argoproj.
 test "$(printf '%s' "${SECRET_JSON}" | jq -r '.metadata.labels.environment')" = "e2e"
 test "$(printf '%s' "${SECRET_JSON}" | jq -r '.metadata.labels.team')" = "platform"
 test "$(printf '%s' "${SECRET_JSON}" | jq -r '.data.server' | base64 -d)" = "https://${SPOKE_IP}:6443"
-test "$(printf '%s' "${CONFIG}" | jq -r '.execProviderConfig.command')" = "/usr/local/bin/custom-auth/get-token.sh"
+test "$(printf '%s' "${CONFIG}" | jq -r '.execProviderConfig.command')" = "${SECRETREADER_COMMAND}"
+test "$(printf '%s' "${CONFIG}" | jq -r '.execProviderConfig.args // [] | length')" = "0"
+test "$(printf '%s' "${CONFIG}" | jq -r '.execProviderConfig.apiVersion')" = "client.authentication.k8s.io/v1"
+test "$(printf '%s' "${CONFIG}" | jq -r '.execProviderConfig.provideClusterInfo')" = "true"
+test "$(printf '%s' "${CONFIG}" | jq -r '.execProviderConfig.config.clusterName')" = "${CP_NAME}"
 test "$(printf '%s' "${CONFIG}" | jq -r '.tlsClientConfig.caData | length')" -gt 100
 
 log "creating ApplicationSet"
