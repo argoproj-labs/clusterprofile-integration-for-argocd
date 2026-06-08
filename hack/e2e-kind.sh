@@ -94,6 +94,21 @@ cleanup() {
 
 trap cleanup EXIT
 
+retry_until() {
+  local attempts="$1" label="$2" i
+  shift 2
+  for i in $(seq 1 "${attempts}"); do
+    if "$@"; then
+      return 0
+    fi
+    if [ $((i % 15)) -eq 0 ]; then
+      log "waiting for ${label} (${i}/${attempts})"
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 wait_for_application() {
   local sync health phase
   for i in $(seq 1 600); do
@@ -111,6 +126,70 @@ wait_for_application() {
   done
   echo "application ${APP_NAME} did not become Synced and Healthy" >&2
   return 1
+}
+
+verify_argocd_server_cluster_access() {
+  local admin_password argocd_config argocd_context cluster_json
+  admin_password="$(
+    kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" get secret argocd-initial-admin-secret \
+      -o jsonpath='{.data.password}' | base64 -d
+  )"
+  argocd_config="${WORK_DIR}/argocd-config"
+  argocd_context="${E2E_PREFIX}-server"
+
+  log "verifying Argo CD server can access ClusterProfile cluster"
+  argocd login localhost \
+    --config "${argocd_config}" \
+    --name "${argocd_context}" \
+    --kube-context "kind-${HUB_CLUSTER}" \
+    --port-forward \
+    --port-forward-namespace "${ARGOCD_NS}" \
+    --username admin \
+    --password "${admin_password}" \
+    --insecure \
+    --skip-test-tls \
+    --grpc-web
+
+  _cluster_connection_successful() {
+    cluster_json="$(
+      argocd cluster list \
+        --config "${argocd_config}" \
+        --argocd-context "${argocd_context}" \
+        --kube-context "kind-${HUB_CLUSTER}" \
+        --port-forward \
+        --port-forward-namespace "${ARGOCD_NS}" \
+        -o json
+    )" || return 1
+    [ "$(
+      printf '%s' "${cluster_json}" | jq -r \
+        --arg name "${CP_NAME}" \
+        --arg server "https://${SPOKE_IP}:6443" \
+        'first(.[] | select(.name == $name and .server == $server) | .connectionState.status) // ""'
+    )" = "Successful" ]
+  }
+  if ! retry_until 120 "Argo CD server cluster connection to ${CP_NAME}" _cluster_connection_successful; then
+    echo "Argo CD server did not report a successful connection to ${CP_NAME}" >&2
+    printf '%s\n' "${cluster_json}" | jq . || printf '%s\n' "${cluster_json}"
+    return 1
+  fi
+
+  _app_logs_available() {
+    argocd app logs "${APP_NAME}" \
+      --config "${argocd_config}" \
+      --argocd-context "${argocd_context}" \
+      --kube-context "kind-${HUB_CLUSTER}" \
+      --port-forward \
+      --port-forward-namespace "${ARGOCD_NS}" \
+      --namespace guestbook \
+      --kind Pod \
+      --container guestbook-ui \
+      --tail 1 >/dev/null
+  }
+  if ! retry_until 60 "Argo CD server to retrieve logs from ${APP_NAME}" _app_logs_available; then
+    echo "Argo CD server could not retrieve logs for ${APP_NAME}" >&2
+    return 1
+  fi
+  log "Argo CD server retrieved logs from ${APP_NAME}"
 }
 
 patch_secretreader_volume() {
@@ -132,6 +211,7 @@ spec:
               readOnly: true"
 }
 
+require_command argocd
 require_command docker
 require_command helm
 require_command jq
@@ -411,5 +491,6 @@ done
 
 wait_for_application
 kubectl --context "kind-${SPOKE_CLUSTER}" -n guestbook wait --for=condition=Ready pod -l app=guestbook-ui --timeout=300s
+verify_argocd_server_cluster_access
 
 log "full e2e passed"
