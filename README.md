@@ -65,11 +65,9 @@ The access providers file would look something like this:
     {
       "name": "secretreader",
       "execConfig": {
-          "apiVersion": "client.authentication.k8s.io/v1",
-          "args": null,
-          "command": "./bin/secretreader-plugin",
-          "env": null,
-          "provideClusterInfo": true
+        "apiVersion": "client.authentication.k8s.io/v1",
+        "command": "<path-to-provider-plugin>",
+        "provideClusterInfo": true
       }
     }
     // ... more providers
@@ -79,7 +77,7 @@ The access providers file would look something like this:
 
 The Cluster Profile controller reads this file, finds an access provider whose name matches one in the Cluster Profile object's `Status.AccessProviders` field, and generates the Secret to use the provider's `execConfig` for the cluster connection.
 
-To provide this file to the controller, configure the `argocd-clusterprofile-controller` with the `--cluster-profile-providers-file` argument (or `ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTER_PROFILE_PROVIDERS_FILE` environment variable) and mount the file through a Secret or ConfigMap (see the [kind cluster example](docs/cluster-profiles-kind-example.md)).
+To provide this file to the controller, configure the `argocd-clusterprofile-controller` with the `--clusterprofile-provider-file` argument (or `ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTERPROFILE_PROVIDER_FILE` environment variable) and mount the file through a Secret or ConfigMap. The plugin binary must be available at the same path to the Argo CD components that use the resulting cluster Secrets; see the [architecture](docs/ARCHITECTURE.md) and [kind cluster example](docs/cluster-profiles-kind-example.md).
 
 ### Deletion
 
@@ -94,7 +92,7 @@ To install the standalone controller into your cluster:
 kubectl apply -f artifacts/manifests/install.yaml
 ```
 
-To provide an access providers file to the controller, you should configure the `argocd-clusterprofile-controller` deployment with the `--cluster-profile-providers-file` argument (or `ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTER_PROFILE_PROVIDERS_FILE` environment variable). This should point to a mounted file that contains the configuration for the access providers.
+To provide an access providers file to the controller, you should configure the `argocd-clusterprofile-controller` deployment with the `--clusterprofile-provider-file` argument (or `ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTERPROFILE_PROVIDER_FILE` environment variable). This should point to a mounted file that contains the configuration for the access providers.
 
 ### Configuration Parameters
 
@@ -104,7 +102,7 @@ The controller can be configured via command-line arguments or equivalent enviro
 
 | Argument | Environment Variable | Default | Description |
 | --- | --- | --- | --- |
-| `--cluster-profile-providers-file` | `ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTER_PROFILE_PROVIDERS_FILE` | `""` | Path to the custom access providers file. |
+| `--clusterprofile-provider-file` | `ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTERPROFILE_PROVIDER_FILE` | `""` | Path to the custom access providers file. |
 | `--cluster-profile-namespaces` | `ARGOCD_CLUSTERPROFILE_CONTROLLER_NAMESPACES` | `""` | Comma-separated namespaces to watch for `ClusterProfile`s (defaults to active namespace). |
 | `--enable-leader-election` | `ARGOCD_CLUSTERPROFILE_CONTROLLER_ENABLE_LEADER_ELECTION` | `false` | Enables leader election for HA/redundancy. |
 | `--dry-run` | `ARGOCD_CLUSTERPROFILE_CONTROLLER_DRY_RUN` | `false` | Enable dry-run mode. |
