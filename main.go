@@ -33,14 +33,14 @@ const (
 
 func NewCommand() *cobra.Command {
 	var (
-		clientConfig                clientcmd.ClientConfig
-		metricsAddr                 string
-		probeAddr                   string
-		enableLeaderElection        bool
-		clusterProfileNamespaces    []string
-		debugLog                    bool
-		dryRun                      bool
-		clusterProfileProvidersFile string
+		clientConfig               clientcmd.ClientConfig
+		metricsAddr                string
+		probeAddr                  string
+		enableLeaderElection       bool
+		clusterProfileNamespaces   []string
+		debugLog                   bool
+		dryRun                     bool
+		clusterProfileProviderFile string
 	)
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
@@ -124,11 +124,11 @@ func NewCommand() *cobra.Command {
 			}
 
 			if err = (&ClusterProfileReconciler{
-				Client:                      mgr.GetClient(),
-				Scheme:                      mgr.GetScheme(),
-				Log:                         ctrl.Log.WithName("controllers").WithName("ClusterProfile"),
-				Namespace:                   namespace,
-				ClusterProfileProvidersFile: clusterProfileProvidersFile,
+				Client:                     mgr.GetClient(),
+				Scheme:                     mgr.GetScheme(),
+				Log:                        ctrl.Log.WithName("controllers").WithName("ClusterProfile"),
+				Namespace:                  namespace,
+				ClusterProfileProviderFile: clusterProfileProviderFile,
 			}).SetupWithManager(mgr); err != nil {
 				log.Error(err, "unable to create controller", "controller", "ClusterProfile")
 				os.Exit(1)
@@ -191,10 +191,10 @@ func NewCommand() *cobra.Command {
 		"Enable dry run mode",
 	)
 	command.Flags().StringVar(
-		&clusterProfileProvidersFile,
-		"cluster-profile-providers-file",
-		env.StringFromEnv("ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTER_PROFILE_PROVIDERS_FILE", ""),
-		"The path to the cluster profile providers file.",
+		&clusterProfileProviderFile,
+		"clusterprofile-provider-file",
+		env.StringFromEnv("ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTERPROFILE_PROVIDER_FILE", ""),
+		"The path to the cluster profile provider file.",
 	)
 
 	return &command

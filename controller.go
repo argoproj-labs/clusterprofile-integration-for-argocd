@@ -12,7 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clusterinventory "sigs.k8s.io/cluster-inventory-api/apis/v1alpha1"
-	"sigs.k8s.io/cluster-inventory-api/pkg/credentials"
+	"sigs.k8s.io/cluster-inventory-api/pkg/access"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -29,6 +29,9 @@ const (
 	secretNameTemplate = "cluster-%s"
 	// clusterProfileOriginLabel is the label used to identify the ClusterProfile that a Secret was created from.
 	clusterProfileOriginLabel = "argocd.argoproj.io/cluster-profile-origin"
+	secretDataNameKey         = "name"
+	secretDataServerKey       = "server"
+	secretDataConfigKey       = "config"
 )
 
 // ClusterProfileReconciler reconciles a ClusterProfile object with a corresponding Secret
@@ -37,10 +40,10 @@ type ClusterProfileReconciler struct {
 	Log       logr.Logger
 	Scheme    *runtime.Scheme
 	Namespace string
-	// ClusterProfileProvidersFile is the path to the file containing the cluster profile providers configuration.
-	ClusterProfileProvidersFile string
+	// ClusterProfileProviderFile is the path to the file containing the cluster profile provider configuration.
+	ClusterProfileProviderFile string
 	// AccessProviders is the set of access providers used to build the kubeconfig for a ClusterProfile.
-	AccessProviders *credentials.CredentialsProvider
+	AccessProviders *access.Config
 }
 
 //+kubebuilder:rbac:groups=multicluster.x-k8s.io,resources=clusterprofiles,verbs=get;list;watch;update;patch
@@ -143,10 +146,6 @@ func (r *ClusterProfileReconciler) mutateSecret(
 	labels[clusterProfileOriginLabel] = fmt.Sprintf("%s-%s", clusterProfile.Namespace, clusterProfile.Name)
 	secret.Labels = labels
 
-	if len(clusterProfile.Status.AccessProviders) == 0 {
-		return fmt.Errorf("ClusterProfile %v field Status.AccessProviders is empty", clusterProfile.Name)
-	}
-
 	// Check for supported cloud provider. For example, a Cluster Profile with an access provider named
 	// "argo-cd-builtin-gcp" will authenticate with cmd/argocd-k8s-auth/commands/gcp.go directly, without
 	// requiring an access providers file.
@@ -167,9 +166,9 @@ func (r *ClusterProfileReconciler) mutateSecret(
 			return fmt.Errorf("failed to marshal config: %w", err)
 		}
 		secret.StringData = map[string]string{
-			"name":   clusterProfile.Name,
-			"server": provider.Cluster.Server,
-			"config": string(configBytes),
+			secretDataNameKey:   clusterProfile.Name,
+			secretDataServerKey: provider.Cluster.Server,
+			secretDataConfigKey: string(configBytes),
 		}
 		return nil
 	}
@@ -181,7 +180,8 @@ func (r *ClusterProfileReconciler) mutateSecret(
 	}
 
 	// If using custom access providers, build the kubeconfig.
-	config, err := r.AccessProviders.BuildConfigFromCP(clusterProfile)
+	accessProviders := cloneAccessConfig(r.AccessProviders)
+	config, err := accessProviders.BuildConfigFromCP(clusterProfile)
 	if err != nil {
 		return fmt.Errorf("failed to build config: %w", err)
 	}
@@ -206,7 +206,7 @@ func (r *ClusterProfileReconciler) mutateSecret(
 			replaced = strings.ReplaceAll(
 				replaced,
 				"{{ .ClusterProfileServer }}",
-				clusterProfile.Status.AccessProviders[0].Cluster.Server,
+				config.Host,
 			)
 			args[i] = replaced
 		}
@@ -239,21 +239,39 @@ func (r *ClusterProfileReconciler) mutateSecret(
 	}
 
 	secret.StringData = map[string]string{
-		"name":   clusterProfile.Name,
-		"server": config.Host,
-		"config": string(configBytes),
+		secretDataNameKey:   clusterProfile.Name,
+		secretDataServerKey: config.Host,
+		secretDataConfigKey: string(configBytes),
 	}
 
 	return nil
 }
 
-func (r *ClusterProfileReconciler) loadClusterProfileProviders() error {
-	// TODO: do we need to reload periodically? (unlikely)
-	if r.ClusterProfileProvidersFile == "" {
-		r.Log.Info("no cluster profile providers file specified, skipping")
+func cloneAccessConfig(config *access.Config) *access.Config {
+	if config == nil {
 		return nil
 	}
-	providers, err := credentials.NewFromFile(r.ClusterProfileProvidersFile)
+	clone := &access.Config{}
+	if len(config.Providers) == 0 {
+		return clone
+	}
+	clone.Providers = make([]access.Provider, len(config.Providers))
+	for i, provider := range config.Providers {
+		clone.Providers[i] = provider
+		if provider.ExecConfig != nil {
+			clone.Providers[i].ExecConfig = provider.ExecConfig.DeepCopy()
+		}
+	}
+	return clone
+}
+
+func (r *ClusterProfileReconciler) loadClusterProfileProviderFile() error {
+	// TODO: do we need to reload periodically? (unlikely)
+	if r.ClusterProfileProviderFile == "" {
+		r.Log.Info("no cluster profile provider file specified, skipping")
+		return nil
+	}
+	providers, err := access.NewFromFile(r.ClusterProfileProviderFile)
 	if err != nil {
 		return fmt.Errorf("failed to get providers from file: %w", err)
 	}
@@ -263,7 +281,7 @@ func (r *ClusterProfileReconciler) loadClusterProfileProviders() error {
 
 func (r *ClusterProfileReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// If using a supported cloud provider, this step will be skipped as no file is needed.
-	if err := r.loadClusterProfileProviders(); err != nil {
+	if err := r.loadClusterProfileProviderFile(); err != nil {
 		return err
 	}
 	return ctrl.NewControllerManagedBy(mgr).
