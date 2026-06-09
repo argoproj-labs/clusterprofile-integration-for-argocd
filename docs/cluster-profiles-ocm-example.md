@@ -230,19 +230,20 @@ Install Argo CD on the hub cluster:
 kubectl config use-context kind-hub
 kubectl config set-context --current --namespace=argocd
 
-kubectl apply --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-
+helm repo add argo https://argoproj.github.io/argo-helm
+helm repo update argo
 # TODO: Once the first Argo CD release containing
 # 6d92e177b45fcd51bde0dbc169f7f923acc9a79d is available, replace this latest
-# image override with that released version and document it as the minimum
+# image tag override with that released version and document it as the minimum
 # supported Argo CD version for ClusterProfile exec config propagation.
-kubectl -n argocd set image statefulset/argocd-application-controller \
-  argocd-application-controller=quay.io/argoproj/argocd:latest
-kubectl -n argocd set image deployment/argocd-server \
-  argocd-server=quay.io/argoproj/argocd:latest
+helm upgrade --install argocd argo/argo-cd \
+  --set global.image.tag=latest \
+  --namespace argocd \
+  --create-namespace \
+  --wait
 
 # Install the standalone Cluster Profile Controller
-kubectl apply -f artifacts/manifests/install.yaml
+kubectl apply -k artifacts/manifests
 ```
 
 ### \[Alternative\] Local Development
@@ -254,7 +255,8 @@ kind load docker-image controller:dev --name hub
 
 cd artifacts/manifests/base/clusterprofile-controller
 kustomize edit set image controller:latest=controller:dev
-kubectl apply -k .
+cd -
+kubectl apply -k artifacts/manifests
 ```
 
 ## 10. Configure the cp-creds Access Provider
@@ -334,7 +336,7 @@ spec:
         - name: clusterprofile-plugins
           emptyDir: {}
       containers:
-        - name: argocd-application-controller
+        - name: application-controller
           volumeMounts:
             - name: clusterprofile-plugins
               mountPath: /plugins'
@@ -359,7 +361,7 @@ spec:
         - name: clusterprofile-plugins
           emptyDir: {}
       containers:
-        - name: argocd-server
+        - name: server
           volumeMounts:
             - name: clusterprofile-plugins
               mountPath: /plugins'

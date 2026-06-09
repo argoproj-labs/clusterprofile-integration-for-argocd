@@ -7,7 +7,7 @@ This guide demonstrates how to use Cluster Profiles to connect a spoke cluster t
 
 ## Prerequisites
 
-- Docker, Kind, Kubectl
+- Docker, Kind, Kubectl, Helm
 - A Kubernetes version that supports ImageVolume.
 
 ## 1. Create Hub and Spoke Clusters
@@ -24,22 +24,22 @@ Install Argo CD in `hub`:
 
 ```bash
 kubectl config use-context kind-hub
-kubectl create namespace argocd
 kubectl config set-context --current --namespace=argocd
-# Install Argo CD. Use server-side apply in case ApplicationSet CRD is too large for client-side kubectl apply
-kubectl apply --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
+helm repo add argo https://argoproj.github.io/argo-helm
+helm repo update argo
 # TODO: Once the first Argo CD release containing
 # 6d92e177b45fcd51bde0dbc169f7f923acc9a79d is available, replace this latest
-# image override with that released version and document it as the minimum
+# image tag override with that released version and document it as the minimum
 # supported Argo CD version for ClusterProfile exec config propagation.
-kubectl -n argocd set image statefulset/argocd-application-controller \
-  argocd-application-controller=quay.io/argoproj/argocd:latest
-kubectl -n argocd set image deployment/argocd-server \
-  argocd-server=quay.io/argoproj/argocd:latest
+helm upgrade --install argocd argo/argo-cd \
+  --set global.image.tag=latest \
+  --namespace argocd \
+  --create-namespace \
+  --wait
 
 # Install the standalone Cluster Profile Controller
-kubectl apply -f artifacts/manifests/install.yaml
+kubectl apply -k artifacts/manifests
 ```
 
 ### \[Alternative\] Local Development
@@ -179,7 +179,7 @@ spec:
             reference: registry.k8s.io/cluster-inventory-api/secretreader:v0.1.3
             pullPolicy: IfNotPresent
       containers:
-        - name: argocd-application-controller
+        - name: application-controller
           volumeMounts:
             - name: secretreader-plugin
               mountPath: /plugins/secretreader
@@ -195,7 +195,7 @@ spec:
             reference: registry.k8s.io/cluster-inventory-api/secretreader:v0.1.3
             pullPolicy: IfNotPresent
       containers:
-        - name: argocd-server
+        - name: server
           volumeMounts:
             - name: secretreader-plugin
               mountPath: /plugins/secretreader

@@ -88,7 +88,7 @@ The Cluster Profile controller runs as a standalone deployment alongside your Ar
 
 To install the standalone controller into your cluster:
 ```bash
-kubectl apply -f artifacts/manifests/install.yaml
+kubectl apply -k artifacts/manifests
 ```
 
 To provide an access providers file to the controller, you should configure the `argocd-clusterprofile-controller` deployment with the `--clusterprofile-provider-file` argument (or `ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTERPROFILE_PROVIDER_FILE` environment variable). This should point to a mounted file that contains the configuration for the access providers.
@@ -113,7 +113,7 @@ The controller can be configured via command-line arguments or equivalent enviro
 
 To uninstall the controller:
 ```bash
-kubectl delete -f artifacts/manifests/install.yaml
+kubectl delete -k artifacts/manifests
 ```
 
 ## Local Development & Contributing
