@@ -76,11 +76,22 @@ jobs:
         with:
           version: v3.18.3
 
+      - name: Setup Argo CD CLI
+        env:
+          ARGOCD_CLI_VERSION: v3.4.3
+        run: |
+          curl -sSL -o argocd "https://github.com/argoproj/argo-cd/releases/download/${ARGOCD_CLI_VERSION}/argocd-linux-amd64"
+          curl -sSL -o cli_checksums.txt "https://github.com/argoproj/argo-cd/releases/download/${ARGOCD_CLI_VERSION}/cli_checksums.txt"
+          awk '$2 == "argocd-linux-amd64" { print $1 "  argocd"; found=1 } END { exit found ? 0 : 1 }' cli_checksums.txt > argocd.sha256
+          sha256sum -c argocd.sha256
+          sudo install -m 0755 argocd /usr/local/bin/argocd
+
       - name: Verify e2e tools
         run: |
           kind version
           kubectl version --client=true
           helm version --short
+          argocd version --client --short
           jq --version
 
       - name: Run full e2e

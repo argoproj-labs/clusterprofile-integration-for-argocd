@@ -4,7 +4,7 @@ This guide demonstrates how to use Cluster Profiles to connect a GKE spoke clust
 
 ## Prerequisites
 
-`gcloud` CLI, GCP project with billing enabled, Kubectl
+`gcloud` CLI, GCP project with billing enabled, Kubectl, Helm
 
 ## 1. Set up environment variables
 
@@ -50,12 +50,21 @@ kubectl create namespace guestbook
 Install Argo CD in the hub cluster:
 ```bash
 kubectl config use-context gke_${GCP_PROJECT_ID}_${GCP_LOCATION}_hub
-kubectl create namespace argocd
-# Install Argo CD. ApplicationSet CRD is too large for client-side `kubectl apply`, use server-side:
-kubectl apply --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+kubectl config set-context --current --namespace=argocd
+helm repo add argo https://argoproj.github.io/argo-helm
+helm repo update argo
+# TODO: Once the first Argo CD release containing
+# 6d92e177b45fcd51bde0dbc169f7f923acc9a79d is available, replace this latest
+# image tag override with that released version and document it as the minimum
+# supported Argo CD version for ClusterProfile exec config propagation.
+helm upgrade --install argocd argo/argo-cd \
+  --set global.image.tag=latest \
+  --namespace argocd \
+  --create-namespace \
+  --wait
 
 # Install the standalone Cluster Profile Controller
-kubectl apply -f artifacts/manifests/install.yaml
+kubectl apply -k artifacts/manifests
 ```
 
 ### \[Alternative\] Local Development
@@ -65,6 +74,7 @@ To include local changes to the controller source code, build a local image and 
 ```bash
 kubectl config use-context gke_${GCP_PROJECT_ID}_${GCP_LOCATION}_hub
 kubectl create namespace argocd
+kubectl config set-context --current --namespace=argocd
 # Create an artifact registry repo
 gcloud services enable artifactregistry.googleapis.com
 export REPO_NAME="controller-repo"
@@ -80,7 +90,8 @@ make docker-push IMG=${IMAGE_NAMESPACE}/controller:${IMAGE_TAG}
 # Deploy local controller manifests using Kustomize
 cd artifacts/manifests/base/clusterprofile-controller
 kustomize edit set image controller:latest=${IMAGE_NAMESPACE}/controller:${IMAGE_TAG}
-kubectl apply -k .
+cd -
+kubectl apply -k artifacts/manifests
 ```
 
 To update with new changes:

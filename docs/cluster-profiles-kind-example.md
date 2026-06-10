@@ -7,7 +7,8 @@ This guide demonstrates how to use Cluster Profiles to connect a spoke cluster t
 
 ## Prerequisites
 
-- Docker, Kind, Kubectl
+- Docker, Kind, Kubectl, Helm
+- A Kubernetes version that supports ImageVolume.
 
 ## 1. Create Hub and Spoke Clusters
 
@@ -23,13 +24,22 @@ Install Argo CD in `hub`:
 
 ```bash
 kubectl config use-context kind-hub
-kubectl create namespace argocd
 kubectl config set-context --current --namespace=argocd
-# Install Argo CD. Use server-side apply in case ApplicationSet CRD is too large for client-side kubectl apply
-kubectl apply --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+helm repo add argo https://argoproj.github.io/argo-helm
+helm repo update argo
+# TODO: Once the first Argo CD release containing
+# 6d92e177b45fcd51bde0dbc169f7f923acc9a79d is available, replace this latest
+# image tag override with that released version and document it as the minimum
+# supported Argo CD version for ClusterProfile exec config propagation.
+helm upgrade --install argocd argo/argo-cd \
+  --set global.image.tag=latest \
+  --namespace argocd \
+  --create-namespace \
+  --wait
 
 # Install the standalone Cluster Profile Controller
-kubectl apply -f artifacts/manifests/install.yaml
+kubectl apply -k artifacts/manifests
 ```
 
 ### \[Alternative\] Local Development
@@ -102,47 +112,98 @@ SPOKE_CA=$(kubectl --context kind-spoke config view --raw --minify --flatten -o 
 SPOKE_TOKEN=$(kubectl --context kind-spoke -n kube-system get secret argocd-manager-token -o jsonpath='{.data.token}' | base64 -d)
 ```
 
-## 5. Create a plugin to use credentials
+## 5. Store credentials for the secretreader plugin
 
-Create a simple auth plugin. It uses ExecCredential for a token in the format expected by Kubernetes:
+The `secretreader` plugin reads a token from a Kubernetes Secret. In this example, the Secret name matches the ClusterProfile name (`spoke-cluster`), the Secret lives in the Argo CD namespace, and the token is stored in `data.token`.
+
 ```bash
 kubectl config use-context kind-hub
-kubectl create configmap argocd-custom-auth-plugin --from-literal=get-token.sh='#!/bin/sh
-cat <<EOF
-{
-  "apiVersion": "client.authentication.k8s.io/v1beta1",
-  "kind": "ExecCredential",
-  "status": {
-    "token": "'"$SPOKE_TOKEN"'"
-  }
-}
-EOF
-'
+
+kubectl -n argocd create secret generic spoke-cluster \
+  --from-literal=token="${SPOKE_TOKEN}"
 ```
 
-Mount the auth plugin into the application controller:
+Grant the Argo CD application controller and server permission to read that Secret:
+
+```bash
+APP_CONTROLLER_SA=$(kubectl -n argocd get sts/argocd-application-controller -o jsonpath='{.spec.template.spec.serviceAccountName}')
+APP_CONTROLLER_SA=${APP_CONTROLLER_SA:-argocd-application-controller}
+SERVER_SA=$(kubectl -n argocd get deploy/argocd-server -o jsonpath='{.spec.template.spec.serviceAccountName}')
+SERVER_SA=${SERVER_SA:-argocd-server}
+
+kubectl -n argocd apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: argocd-secretreader
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    resourceNames:
+      - spoke-cluster
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: argocd-secretreader
+subjects:
+  - kind: ServiceAccount
+    name: ${APP_CONTROLLER_SA}
+    namespace: argocd
+  - kind: ServiceAccount
+    name: ${SERVER_SA}
+    namespace: argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: argocd-secretreader
+EOF
+```
+
+## 6. Configure the secretreader provider
+
+Mount the `secretreader` plugin image into the Argo CD components that use the resulting cluster Secret. The command path must be the same in both components. With an Argo CD image that supports `execProviderConfig.config`, Argo CD passes the ClusterProfile extension data to the plugin through `KUBERNETES_EXEC_INFO` when `provideClusterInfo` is true.
+
 ```bash
 kubectl patch sts/argocd-application-controller --type strategic --patch '
 spec:
   template:
     spec:
       volumes:
-        - name: auth-script
-          configMap:
-            name: argocd-custom-auth-plugin
-            defaultMode: 0755
+        - name: secretreader-plugin
+          image:
+            reference: registry.k8s.io/cluster-inventory-api/secretreader:v0.1.3
+            pullPolicy: IfNotPresent
       containers:
-        - name: argocd-application-controller
+        - name: application-controller
           volumeMounts:
-            - name: auth-script
-              mountPath: /usr/local/bin/custom-auth'
+            - name: secretreader-plugin
+              mountPath: /plugins/secretreader
+              readOnly: true'
+
+kubectl patch deploy/argocd-server --type strategic --patch '
+spec:
+  template:
+    spec:
+      volumes:
+        - name: secretreader-plugin
+          image:
+            reference: registry.k8s.io/cluster-inventory-api/secretreader:v0.1.3
+            pullPolicy: IfNotPresent
+      containers:
+        - name: server
+          volumeMounts:
+            - name: secretreader-plugin
+              mountPath: /plugins/secretreader
+              readOnly: true'
 ```
 
-## 6. Create access providers file
+Create an access providers file. The `execConfig.command` points at the mounted `secretreader` binary.
 
-A Cluster Profile expects an access providers file with an `execConfig` for authentication. This `execConfig` will run our plugin to return a token.
-
-Create an access providers secret:
 ```bash
 kubectl config use-context kind-hub
 kubectl create secret generic cp-creds-secret \
@@ -150,50 +211,20 @@ kubectl create secret generic cp-creds-secret \
 {
   "providers": [
     {
-      "name": "hub-provider",
+      "name": "secretreader",
       "execConfig": {
-        "command": "/usr/local/bin/custom-auth/get-token.sh",
-        "apiVersion": "client.authentication.k8s.io/v1beta1"
-      },
-      "tlsClientConfig": {
-        "caData": "${SPOKE_CA}"
+        "command": "/plugins/secretreader/bin/secretreader-plugin",
+        "apiVersion": "client.authentication.k8s.io/v1",
+        "provideClusterInfo": true
       }
     }
   ]
 }
 EOF
 ```
-This could also be done with a `ConfigMap`.
 
-For this example, the command is a script that will be created in a later step. The secret contents will be read by the Cluster Profile syncer and used to generate an Argo CD cluster secret.
+Mount the access providers file into the Cluster Profile controller:
 
-## 7. Create Cluster Profile in hub
-
-Normally, a controller would create the Cluster Profile and update its status. In this example we will create it manually and patch in the status.
-
-Create the Cluster Profile object to represent `spoke`:
-```bash
-# Create ClusterProfile
-kubectl apply -f - <<EOF
-apiVersion: "multicluster.x-k8s.io/v1alpha1"
-kind: ClusterProfile
-metadata:
-  name: spoke-cluster
-  namespace: argocd
-spec:
-  clusterManager:
-    name: manual
-  displayName: "Spoke Cluster"
-EOF
-```
-
-Add access provider to the ClusterProfile status:
-```bash
-kubectl patch clusterprofile spoke-cluster --subresource=status --type=merge -p '{"status":{"accessProviders":[{"name":"hub-provider","cluster":{"server":"https://'"${SPOKE_IP}"':6443", "certificate-authority-data": "'"${SPOKE_CA}"'"}}]}}'
-```
-Note that the provider's `name` refers to the name in the access providers secret/file.
-
-Now we mount the access providers file into the Cluster Profile controller:
 ```bash
 kubectl patch deploy/argocd-clusterprofile-controller --type strategic --patch '
 spec:
@@ -210,9 +241,63 @@ spec:
               mountPath: /app/cp-creds
           args:
             - "/manager"
-            - "--cluster-profile-providers-file=/app/cp-creds/cp-creds.json"'
+            - "--clusterprofile-provider-file=/app/cp-creds/cp-creds.json"'
 ```
-Setting a value for `--cluster-profile-providers-file` will enable the Cluster Profile syncer in the clusterprofile controller.
+Setting a value for `--clusterprofile-provider-file` will enable the Cluster Profile syncer in the clusterprofile controller.
+
+Wait for both controllers to roll out:
+
+```bash
+kubectl rollout status sts/argocd-application-controller --timeout=300s
+kubectl rollout status deploy/argocd-server --timeout=300s
+kubectl rollout status deploy/argocd-clusterprofile-controller --timeout=300s
+```
+
+## 7. Create Cluster Profile in hub
+
+Normally, a controller would create the Cluster Profile and update its status. In this example we will create it manually and patch in the status.
+
+Create the Cluster Profile object to represent `spoke`:
+```bash
+kubectl apply -f - <<EOF
+apiVersion: "multicluster.x-k8s.io/v1alpha1"
+kind: ClusterProfile
+metadata:
+  name: spoke-cluster
+  namespace: argocd
+spec:
+  clusterManager:
+    name: manual
+  displayName: "Spoke Cluster"
+EOF
+```
+
+Add the `secretreader` access provider to the ClusterProfile status. The `cluster.extensions` entry passes non-secret plugin configuration to the exec plugin; here, `clusterName` tells `secretreader` which Secret to read.
+
+```bash
+kubectl patch clusterprofile spoke-cluster --subresource=status --type=merge -p "{
+  \"status\": {
+    \"accessProviders\": [
+      {
+        \"name\": \"secretreader\",
+        \"cluster\": {
+          \"server\": \"https://${SPOKE_IP}:6443\",
+          \"certificate-authority-data\": \"${SPOKE_CA}\",
+          \"extensions\": [
+            {
+              \"name\": \"client.authentication.k8s.io/exec\",
+              \"extension\": {
+                \"clusterName\": \"spoke-cluster\"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}"
+```
+Note that the provider's `name` refers to the name in the access providers secret/file.
 
 ## 8. Create ApplicationSet
 

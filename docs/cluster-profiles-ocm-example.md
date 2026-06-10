@@ -221,7 +221,7 @@ Inspect the ClusterProfile to confirm it has the `open-cluster-management` acces
 kubectl get clusterprofile managed1 -o yaml
 ```
 
-You should see the `status.accessProviders` section with `name: open-cluster-management`, a `server` URL pointing through cluster-proxy, and `certificate-authority-data`.
+You should see the `status.accessProviders` section with `name: open-cluster-management`, a `server` URL pointing through cluster-proxy, `certificate-authority-data`, and a `client.authentication.k8s.io/exec` extension whose `clusterName` matches the managed cluster name.
 
 ## 9. Install Argo CD
 
@@ -230,10 +230,20 @@ Install Argo CD on the hub cluster:
 kubectl config use-context kind-hub
 kubectl config set-context --current --namespace=argocd
 
-kubectl apply --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+helm repo add argo https://argoproj.github.io/argo-helm
+helm repo update argo
+# TODO: Once the first Argo CD release containing
+# 6d92e177b45fcd51bde0dbc169f7f923acc9a79d is available, replace this latest
+# image tag override with that released version and document it as the minimum
+# supported Argo CD version for ClusterProfile exec config propagation.
+helm upgrade --install argocd argo/argo-cd \
+  --set global.image.tag=latest \
+  --namespace argocd \
+  --create-namespace \
+  --wait
 
 # Install the standalone Cluster Profile Controller
-kubectl apply -f artifacts/manifests/install.yaml
+kubectl apply -k artifacts/manifests
 ```
 
 ### \[Alternative\] Local Development
@@ -245,18 +255,19 @@ kind load docker-image controller:dev --name hub
 
 cd artifacts/manifests/base/clusterprofile-controller
 kustomize edit set image controller:latest=controller:dev
-kubectl apply -k .
+cd -
+kubectl apply -k artifacts/manifests
 ```
 
 ## 10. Configure the cp-creds Access Provider
 
 OCM's `cp-creds` plugin handles authentication to managed clusters via ManagedServiceAccount tokens. It needs to be:
 1. Referenced in an **access providers file** (read by the ClusterProfile controller)
-2. **Mounted as a binary** in the Argo CD application controller (which executes it at sync time)
+2. **Mounted as a binary** at the same path in the Argo CD components that use the resulting cluster Secrets
 
 ### Create the access providers file
 
-Create a Secret with the `cp-creds.json` providers file. The provider `name` must match the access provider name in the ClusterProfile status (`open-cluster-management`).
+Create a Secret with the `cp-creds.json` providers file. The provider `name` must match the access provider name in the ClusterProfile status (`open-cluster-management`). With `provideClusterInfo` enabled, Argo CD passes the ClusterProfile exec extension config to `cp-creds` through `KUBERNETES_EXEC_INFO`.
 
 ```bash
 kubectl create secret generic cp-creds-secret \
@@ -268,9 +279,7 @@ kubectl create secret generic cp-creds-secret \
       "execConfig": {
         "command": "/plugins/cp-creds",
         "args": [
-          "--managed-serviceaccount=argocd",
-          "--cluster-name={{ .ClusterProfileName }}",
-          "--cluster-server={{ .ClusterProfileServer }}"
+          "--managed-serviceaccount=argocd"
         ],
         "apiVersion": "client.authentication.k8s.io/v1",
         "provideClusterInfo": true
@@ -299,12 +308,12 @@ spec:
               mountPath: /app/cp-creds
           args:
             - "/manager"
-            - "--cluster-profile-providers-file=/app/cp-creds/cp-creds.json"'
+            - "--clusterprofile-provider-file=/app/cp-creds/cp-creds.json"'
 ```
 
-### Mount the cp-creds binary in the application controller
+### Mount the cp-creds binary in Argo CD
 
-The application controller executes `cp-creds` at sync time to obtain credentials. Mount the binary using an `initContainer`:
+The application controller and server can both execute `cp-creds` when they use the resulting cluster Secrets to access managed clusters. Mount the binary at the same path in both components using an `initContainer`:
 
 ```bash
 kubectl patch sts/argocd-application-controller --type strategic --patch '
@@ -318,30 +327,7 @@ spec:
             - sh
             - -c
             - |
-              cp /cp-creds /plugins/cp-creds-binary
-              cat << '"'"'EOF'"'"' > /plugins/cp-creds
-              #!/bin/sh
-              ARGS=""
-              CLUSTER_NAME=""
-              CLUSTER_SERVER=""
-              for arg in "$@"; do
-                case $arg in
-                  --cluster-name=*)
-                    CLUSTER_NAME="${arg#*=}"
-                    ;;
-                  --cluster-server=*)
-                    CLUSTER_SERVER="${arg#*=}"
-                    ;;
-                  *)
-                    ARGS="$ARGS \"$arg\""
-                    ;;
-                esac
-              done
-              if [ -n "$CLUSTER_NAME" ] && [ -n "$CLUSTER_SERVER" ]; then
-                export KUBERNETES_EXEC_INFO="{\"kind\":\"ExecCredential\",\"apiVersion\":\"client.authentication.k8s.io/v1\",\"spec\":{\"interactive\":false,\"cluster\":{\"server\":\"$CLUSTER_SERVER\",\"config\":{\"clusterName\":\"$CLUSTER_NAME\"}}}}"
-              fi
-              eval "/plugins/cp-creds-binary $ARGS"
-              EOF
+              cp /cp-creds /plugins/cp-creds
               chmod +x /plugins/cp-creds
           volumeMounts:
             - name: clusterprofile-plugins
@@ -350,16 +336,42 @@ spec:
         - name: clusterprofile-plugins
           emptyDir: {}
       containers:
-        - name: argocd-application-controller
+        - name: application-controller
+          volumeMounts:
+            - name: clusterprofile-plugins
+              mountPath: /plugins'
+
+kubectl patch deploy/argocd-server --type strategic --patch '
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: install-cp-creds
+          image: quay.io/open-cluster-management/cp-creds:latest
+          command:
+            - sh
+            - -c
+            - |
+              cp /cp-creds /plugins/cp-creds
+              chmod +x /plugins/cp-creds
+          volumeMounts:
+            - name: clusterprofile-plugins
+              mountPath: /plugins
+      volumes:
+        - name: clusterprofile-plugins
+          emptyDir: {}
+      containers:
+        - name: server
           volumeMounts:
             - name: clusterprofile-plugins
               mountPath: /plugins'
 ```
 
-Wait for both controllers to restart:
+Wait for the updated components to restart:
 ```bash
 kubectl rollout status deploy/argocd-clusterprofile-controller
 kubectl rollout status sts/argocd-application-controller
+kubectl rollout status deploy/argocd-server
 ```
 
 ## 11. Create ApplicationSet
@@ -418,6 +430,7 @@ kubectl config use-context kind-hub
 kubectl config set-context --current --namespace=argocd
 echo -e "\nClusterProfile controller errors:" && kubectl logs deployment/argocd-clusterprofile-controller | grep -i error
 echo -e "\nApplication controller errors:" && kubectl logs statefulset/argocd-application-controller | grep -i error
+echo -e "\nArgo CD server errors:" && kubectl logs deployment/argocd-server | grep -i error
 echo -e "\nClusterProfiles:" && kubectl get clusterprofiles
 echo -e "\nCluster Secrets:" && kubectl get secrets -l argocd.argoproj.io/secret-type=cluster
 echo -e "\nApplications:" && kubectl get applications
