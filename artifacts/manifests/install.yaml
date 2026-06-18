@@ -691,7 +691,7 @@ spec:
               key: clusterprofilecontroller.namespaces
               name: argocd-cmd-params-cm
               optional: true
-        image: controller:latest
+        image: ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd:latest
         imagePullPolicy: IfNotPresent
         name: argocd-clusterprofile-controller
         ports:

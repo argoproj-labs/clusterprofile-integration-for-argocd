@@ -1,5 +1,7 @@
 FROM golang:1.26 AS builder
 
+ARG TARGETARCH
+
 WORKDIR /workspace
 
 COPY go.mod go.mod
@@ -9,7 +11,7 @@ RUN go mod download
 COPY main.go main.go
 COPY controller.go controller.go
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o manager main.go controller.go
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -a -o manager main.go controller.go
 
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /

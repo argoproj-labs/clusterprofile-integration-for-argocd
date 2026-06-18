@@ -1,6 +1,10 @@
-# Image URL to use all building/pushing image targets
-IMG ?= controller:latest
-E2E_IMG ?= controller:dev
+# Container image settings
+IMAGE_REPOSITORY?=ghcr.io/argoproj-labs
+IMAGE_NAME=clusterprofile-integration-for-argocd
+IMAGE_PLATFORM?=linux/amd64
+IMAGE_MULTIARCH_PLATFORMS?=linux/amd64,linux/arm64
+IMAGE_TAG?=latest
+IMG ?= $(IMAGE_REPOSITORY)/$(IMAGE_NAME):$(IMAGE_TAG)
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -40,8 +44,8 @@ test: fmt vet ## Run tests.
 
 .PHONY: e2e
 e2e: ## Run full kind-based e2e tests.
-	$(MAKE) docker-build IMG=$(E2E_IMG)
-	E2E_IMG=$(E2E_IMG) ./hack/e2e-kind.sh
+	$(MAKE) docker-build
+	E2E_IMG=$(IMG) ./hack/e2e-kind.sh
 
 ##@ Build
 
@@ -60,3 +64,17 @@ docker-build: ## Build docker image with the manager.
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
 	docker push ${IMG}
+
+##@ Container image (CI)
+
+.PHONY: image
+image: ## Build single-arch container image.
+	docker build --platform $(IMAGE_PLATFORM) -t $(IMG) .
+
+.PHONY: image-multiarch
+image-multiarch: ## Build and push multi-arch container image.
+	docker buildx build --platform $(IMAGE_MULTIARCH_PLATFORMS) --push -t $(IMG) .
+
+.PHONY: push-image
+push-image: ## Push single-arch container image.
+	docker push $(IMG)

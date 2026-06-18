@@ -136,7 +136,7 @@ Contributions are welcome!
   ```
 - **Build Docker Image**:
   ```bash
-  make docker-build IMG=controller:dev
+  make docker-build
   ```
 
 ## Community & Governance

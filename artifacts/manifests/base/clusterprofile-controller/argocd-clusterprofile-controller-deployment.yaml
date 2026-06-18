@@ -19,7 +19,7 @@ spec:
       containers:
         - args:
             - /manager
-          image: controller:latest
+          image: ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd:latest
           imagePullPolicy: IfNotPresent
           name: argocd-clusterprofile-controller
           ports:

@@ -250,12 +250,9 @@ kubectl apply -k artifacts/manifests
 
 If you have made changes to the controller source code, build and deploy a local image instead:
 ```bash
-make docker-build IMG=controller:dev
-kind load docker-image controller:dev --name hub
+make docker-build
+kind load docker-image ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd:latest --name hub
 
-cd artifacts/manifests/base/clusterprofile-controller
-kustomize edit set image controller:latest=controller:dev
-cd -
 kubectl apply -k artifacts/manifests
 ```
 
