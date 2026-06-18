@@ -84,21 +84,18 @@ kubectl config use-context gke_${GCP_PROJECT_ID}_${GCP_LOCATION}_hub
 gcloud auth configure-docker ${GCP_LOCATION}-docker.pkg.dev
 export IMAGE_NAMESPACE=${GCP_LOCATION}-docker.pkg.dev/${GCP_PROJECT_ID}/${REPO_NAME}
 export IMAGE_TAG=my-dev-v1
-make docker-build IMG=${IMAGE_NAMESPACE}/controller:${IMAGE_TAG}
-make docker-push IMG=${IMAGE_NAMESPACE}/controller:${IMAGE_TAG}
+make docker-build IMG=${IMAGE_NAMESPACE}/clusterprofile-integration-for-argocd:${IMAGE_TAG}
+make docker-push IMG=${IMAGE_NAMESPACE}/clusterprofile-integration-for-argocd:${IMAGE_TAG}
 
-# Deploy local controller manifests using Kustomize
-cd artifacts/manifests/base/clusterprofile-controller
-kustomize edit set image controller:latest=${IMAGE_NAMESPACE}/controller:${IMAGE_TAG}
-cd -
+# Deploy controller manifests
 kubectl apply -k artifacts/manifests
 ```
 
 To update with new changes:
 
 ```bash
-make docker-build IMG=${IMAGE_NAMESPACE}/controller:${IMAGE_TAG}
-make docker-push IMG=${IMAGE_NAMESPACE}/controller:${IMAGE_TAG}
+make docker-build IMG=${IMAGE_NAMESPACE}/clusterprofile-integration-for-argocd:${IMAGE_TAG}
+make docker-push IMG=${IMAGE_NAMESPACE}/clusterprofile-integration-for-argocd:${IMAGE_TAG}
 kubectl rollout restart deployment argocd-clusterprofile-controller -n argocd
 ```
 

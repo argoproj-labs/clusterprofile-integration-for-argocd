@@ -52,13 +52,10 @@ kubectl create namespace argocd
 kubectl config set-context --current --namespace=argocd
 
 # Build local controller image
-make docker-build IMG=controller:dev
-kind load docker-image controller:dev --name hub
+make docker-build
+kind load docker-image ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd:latest --name hub
 
-# Deploy local controller manifests using Kustomize
-cd artifacts/manifests/base/clusterprofile-controller
-kustomize edit set image controller:latest=controller:dev
-cd -
+# Deploy controller manifests
 kubectl apply -k artifacts/manifests
 ```
 
