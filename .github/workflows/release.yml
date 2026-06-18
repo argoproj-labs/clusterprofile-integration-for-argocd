@@ -28,13 +28,13 @@ jobs:
           set -xue
           git fetch --prune --tags --force
 
-          LATEST_RELEASE_TAG=$(git tag --list --sort=version:refname | tail -n 1)
+          LATEST_RELEASE_TAG=$(git tag --list 'v*' --sort=version:refname | tail -n 1)
           IS_LATEST_RELEASE=false
           if [[ "$LATEST_RELEASE_TAG" == "${GITHUB_REF_NAME}" ]]; then
             IS_LATEST_RELEASE=true
           fi
-          echo "is_latest_release=$IS_LATEST_RELEASE" >> $GITHUB_OUTPUT
-          echo "image_name=ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd" >> $GITHUB_OUTPUT
+          echo "is_latest_release=$IS_LATEST_RELEASE" >> "$GITHUB_OUTPUT"
+          echo "image_name=ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd" >> "$GITHUB_OUTPUT"
 
   container-image:
     name: Build and push release container image
