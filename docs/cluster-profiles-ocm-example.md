@@ -167,13 +167,13 @@ To add more managed clusters, create a `ManagedServiceAccount` with the same nam
 
 ## 7. Grant Permissions on the Managed Cluster
 
-The `ManagedServiceAccount` add-on creates a ServiceAccount on the managed cluster, but it has no permissions by default. Grant it `cluster-admin` access so Argo CD can deploy applications.
+The `ManagedServiceAccount` add-on creates a ServiceAccount on the managed cluster, but it has no permissions by default. The synced ServiceAccount is created in the `open-cluster-management-agent-addon` namespace. Grant it `cluster-admin` access so Argo CD can deploy applications.
 
 ```bash
 kubectl config use-context kind-managed1
 kubectl create clusterrolebinding argocd-managed-sa \
   --clusterrole=cluster-admin \
-  --serviceaccount=open-cluster-management-managed-serviceaccount:argocd
+  --serviceaccount=open-cluster-management-agent-addon:argocd
 ```
 
 > [!NOTE]
@@ -196,7 +196,7 @@ kubectl create clusterrolebinding argocd-managed-sa \
 >     subject:
 >       kind: ServiceAccount
 >       name: argocd
->       namespace: open-cluster-management-managed-serviceaccount
+>       namespace: open-cluster-management-agent-addon
 > EOF
 > ```
 
