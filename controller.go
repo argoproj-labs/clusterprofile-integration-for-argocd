@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/go-logr/logr"
@@ -22,12 +23,9 @@ import (
 )
 
 const (
-	// clusterProfileFinalizer is the finalizer used by the ClusterProfileReconciler to ensure that
-	// the corresponding Secret is deleted when the ClusterProfile is deleted.
 	clusterProfileFinalizer = "argoproj.io/cluster-profile-finalizer"
-	// secretNameTemplate is the template used to generate the name of the Secret for a ClusterProfile.
-	secretNameTemplate = "cluster-%s"
-	// clusterProfileOriginLabel is the label used to identify the ClusterProfile that a Secret was created from.
+	secretNameTemplate      = "cluster-%s"
+	// clusterProfileOriginLabel records the source ClusterProfile (as "namespace-name") on the generated Secret.
 	clusterProfileOriginLabel = "argocd.argoproj.io/cluster-profile-origin"
 	secretDataNameKey         = "name"
 	secretDataServerKey       = "server"
@@ -52,7 +50,6 @@ type ClusterProfileReconciler struct {
 func (r *ClusterProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log.WithValues("clusterprofile", req.NamespacedName)
 
-	// Fetch Cluster Profile
 	var clusterProfile clusterinventory.ClusterProfile
 	if err := r.Get(ctx, req.NamespacedName, &clusterProfile); err != nil {
 		if errors.IsNotFound(err) {
@@ -62,12 +59,10 @@ func (r *ClusterProfileReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// If the Cluster Profile is being deleted, prune the corresponding secret and remove the finalizer.
 	if !clusterProfile.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, r.pruneSecret(ctx, &clusterProfile)
 	}
 
-	// Add finalizer for pruning secret
 	if !controllerutil.ContainsFinalizer(&clusterProfile, clusterProfileFinalizer) {
 		controllerutil.AddFinalizer(&clusterProfile, clusterProfileFinalizer)
 		if err := r.Update(ctx, &clusterProfile); err != nil {
@@ -76,7 +71,6 @@ func (r *ClusterProfileReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 	}
 
-	// Create or update the secret for the ClusterProfile.
 	secretName := fmt.Sprintf(secretNameTemplate, clusterProfile.Name)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -102,12 +96,11 @@ func (r *ClusterProfileReconciler) pruneSecret(
 ) error {
 	log := r.Log.WithValues("clusterprofile", clusterProfile.Name)
 
-	// If the finalizer is not present, the deletion logic has already been handled.
+	// If the finalizer is gone, the secret has already been pruned.
 	if !controllerutil.ContainsFinalizer(clusterProfile, clusterProfileFinalizer) {
 		return nil
 	}
 
-	// Construct the secret name from the ClusterProfile name.
 	secretName := fmt.Sprintf(secretNameTemplate, clusterProfile.Name)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -116,14 +109,12 @@ func (r *ClusterProfileReconciler) pruneSecret(
 		},
 	}
 
-	// Attempt to delete the secret.
 	err := r.Delete(ctx, secret)
 	if err != nil && !errors.IsNotFound(err) {
 		log.Error(err, "unable to delete secret")
 		return err
 	}
 
-	// Once the secret is gone, remove the finalizer from the ClusterProfile.
 	controllerutil.RemoveFinalizer(clusterProfile, clusterProfileFinalizer)
 	if err := r.Update(ctx, clusterProfile); err != nil {
 		log.Error(err, "unable to update ClusterProfile for deletion")
@@ -132,61 +123,65 @@ func (r *ClusterProfileReconciler) pruneSecret(
 	return nil
 }
 
-// mutateSecret populates the secret with data from the ClusterProfile.
+// mutateSecret populates the secret with the labels and cluster config derived from the ClusterProfile.
 func (r *ClusterProfileReconciler) mutateSecret(
 	secret *corev1.Secret,
 	clusterProfile *clusterinventory.ClusterProfile,
 ) error {
-	// Set labels on the secret to identify it as a cluster secret and link it to the ClusterProfile.
-	labels := make(map[string]string, len(clusterProfile.Labels)+2)
-	for key, value := range clusterProfile.Labels {
-		labels[key] = value
-	}
+	labels := map[string]string{}
+	maps.Copy(labels, clusterProfile.Labels)
 	labels[common.LabelKeySecretType] = common.LabelValueSecretTypeCluster
 	labels[clusterProfileOriginLabel] = fmt.Sprintf("%s-%s", clusterProfile.Namespace, clusterProfile.Name)
 	secret.Labels = labels
 
-	// Check for supported cloud provider. For example, a Cluster Profile with an access provider named
-	// "argo-cd-builtin-gcp" will authenticate with cmd/argocd-k8s-auth/commands/gcp.go directly, without
-	// requiring an access providers file.
+	clusterConfig, server, err := r.buildClusterConfig(clusterProfile)
+	if err != nil {
+		return err
+	}
+	configBytes, err := json.Marshal(clusterConfig)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+	secret.StringData = map[string]string{
+		secretDataNameKey:   clusterProfile.Name,
+		secretDataServerKey: server,
+		secretDataConfigKey: string(configBytes),
+	}
+	return nil
+}
+
+// buildClusterConfig resolves a ClusterProfile into the Argo CD cluster config and server URL.
+// A ClusterProfile exposing an "argo-cd-builtin-<cloud>" access provider authenticates directly via
+// argocd-k8s-auth (e.g. cmd/argocd-k8s-auth/commands/gcp.go); any other provider is resolved through
+// the configured access providers.
+func (r *ClusterProfileReconciler) buildClusterConfig(
+	clusterProfile *clusterinventory.ClusterProfile,
+) (v1alpha1.ClusterConfig, string, error) {
 	for _, provider := range clusterProfile.Status.AccessProviders {
 		if !strings.HasPrefix(provider.Name, "argo-cd-builtin-") {
 			continue
 		}
 		cloudProvider := strings.TrimPrefix(provider.Name, "argo-cd-builtin-")
-		apiConfig := v1alpha1.ClusterConfig{
+		return v1alpha1.ClusterConfig{
 			ExecProviderConfig: &v1alpha1.ExecProviderConfig{
 				Command:    "argocd-k8s-auth",
 				Args:       []string{cloudProvider},
 				APIVersion: "client.authentication.k8s.io/v1beta1",
 			},
-		}
-		configBytes, err := json.Marshal(apiConfig)
-		if err != nil {
-			return fmt.Errorf("failed to marshal config: %w", err)
-		}
-		secret.StringData = map[string]string{
-			secretDataNameKey:   clusterProfile.Name,
-			secretDataServerKey: provider.Cluster.Server,
-			secretDataConfigKey: string(configBytes),
-		}
-		return nil
+		}, provider.Cluster.Server, nil
 	}
+
 	if r.AccessProviders == nil {
-		return fmt.Errorf(
-			"ClusterProfileReconciler AccessProviders not initialized. Required for custom config for ClusterProfile: %v",
-			clusterProfile.Name,
-		)
+		return v1alpha1.ClusterConfig{}, "", fmt.Errorf(
+			"access providers not configured for cluster profile %q", clusterProfile.Name)
 	}
 
-	// If using custom access providers, build the kubeconfig.
-	accessProviders := cloneAccessConfig(r.AccessProviders)
-	config, err := accessProviders.BuildConfigFromCP(clusterProfile)
+	config, err := cloneAccessConfig(r.AccessProviders).BuildConfigFromCP(clusterProfile)
 	if err != nil {
-		return fmt.Errorf("failed to build config: %w", err)
+		return v1alpha1.ClusterConfig{}, "", fmt.Errorf("failed to build config: %w", err)
 	}
 
-	apiConfig := v1alpha1.ClusterConfig{
+	clusterConfig := v1alpha1.ClusterConfig{
 		BearerToken: config.BearerToken,
 		TLSClientConfig: v1alpha1.TLSClientConfig{
 			Insecure:   config.Insecure,
@@ -197,54 +192,38 @@ func (r *ClusterProfileReconciler) mutateSecret(
 		},
 		DisableCompression: config.DisableCompression,
 	}
-
-	// If there is an exec provider, add it to the config.
 	if config.ExecProvider != nil {
+		replacer := strings.NewReplacer(
+			"{{ .ClusterProfileName }}", clusterProfile.Name,
+			"{{ .ClusterProfileServer }}", config.Host,
+		)
 		args := make([]string, len(config.ExecProvider.Args))
 		for i, arg := range config.ExecProvider.Args {
-			replaced := strings.ReplaceAll(arg, "{{ .ClusterProfileName }}", clusterProfile.Name)
-			replaced = strings.ReplaceAll(
-				replaced,
-				"{{ .ClusterProfileServer }}",
-				config.Host,
-			)
-			args[i] = replaced
+			args[i] = replacer.Replace(arg)
 		}
-		apiConfig.ExecProviderConfig = &v1alpha1.ExecProviderConfig{
+		clusterConfig.ExecProviderConfig = &v1alpha1.ExecProviderConfig{
 			Command:            config.ExecProvider.Command,
 			Args:               args,
 			APIVersion:         config.ExecProvider.APIVersion,
 			ProvideClusterInfo: config.ExecProvider.ProvideClusterInfo,
 		}
 		if len(config.ExecProvider.Env) > 0 {
-			apiConfig.ExecProviderConfig.Env = make(map[string]string)
-			for _, env := range config.ExecProvider.Env {
-				apiConfig.ExecProviderConfig.Env[env.Name] = env.Value
+			env := make(map[string]string, len(config.ExecProvider.Env))
+			for _, e := range config.ExecProvider.Env {
+				env[e.Name] = e.Value
 			}
+			clusterConfig.ExecProviderConfig.Env = env
 		}
-		// Preserve the exec provider's Config (e.g., clusterName from ClusterProfile extensions).
-		// This data originates from the ClusterProfile's cluster.extensions field with the reserved key
-		// "client.authentication.k8s.io/exec", as defined by the Kubernetes client authentication API.
-		// Reference: https://kubernetes.io/docs/reference/config-api/kubeconfig.v1/#ExecConfig
+		// Preserve the exec provider Config (e.g. clusterName) sourced from the ClusterProfile's
+		// cluster.extensions "client.authentication.k8s.io/exec" key, per the Kubernetes client
+		// authentication API: https://kubernetes.io/docs/reference/config-api/kubeconfig.v1/#ExecConfig
 		if config.ExecProvider.Config != nil {
 			if configData, err := json.Marshal(config.ExecProvider.Config); err == nil {
-				apiConfig.ExecProviderConfig.Config = &runtime.RawExtension{Raw: configData}
+				clusterConfig.ExecProviderConfig.Config = &runtime.RawExtension{Raw: configData}
 			}
 		}
 	}
-
-	configBytes, err := json.Marshal(apiConfig)
-	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
-	}
-
-	secret.StringData = map[string]string{
-		secretDataNameKey:   clusterProfile.Name,
-		secretDataServerKey: config.Host,
-		secretDataConfigKey: string(configBytes),
-	}
-
-	return nil
+	return clusterConfig, config.Host, nil
 }
 
 func cloneAccessConfig(config *access.Config) *access.Config {
