@@ -75,7 +75,8 @@ The resulting cluster Secret contains:
 
 | Secret field | Source |
 | --- | --- |
-| `data.name` | `ClusterProfile.metadata.name` |
+| `metadata.name` | `cluster-<ClusterProfile.metadata.namespace>-<ClusterProfile.metadata.name>` |
+| `data.name` | `<ClusterProfile.metadata.namespace>-<ClusterProfile.metadata.name>` |
 | `data.server` | Selected `AccessProvider.cluster.server` |
 | `data.config` | JSON-encoded Argo CD `ClusterConfig`, including TLS data and optional `execProviderConfig` |
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -12,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	clusterinventory "sigs.k8s.io/cluster-inventory-api/apis/v1alpha1"
 	"sigs.k8s.io/cluster-inventory-api/pkg/access"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -30,6 +32,8 @@ const (
 	secretDataNameKey         = "name"
 	secretDataServerKey       = "server"
 	secretDataConfigKey       = "config"
+	maxSecretNameLength       = validation.DNS1123SubdomainMaxLength
+	secretNameHashLength      = 10
 )
 
 // ClusterProfileReconciler reconciles a ClusterProfile object with a corresponding Secret
@@ -71,7 +75,7 @@ func (r *ClusterProfileReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 	}
 
-	secretName := fmt.Sprintf(secretNameTemplate, clusterProfile.Name)
+	secretName := clusterProfileSecretName(&clusterProfile)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName,
@@ -101,7 +105,7 @@ func (r *ClusterProfileReconciler) pruneSecret(
 		return nil
 	}
 
-	secretName := fmt.Sprintf(secretNameTemplate, clusterProfile.Name)
+	secretName := clusterProfileSecretName(clusterProfile)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName,
@@ -128,10 +132,11 @@ func (r *ClusterProfileReconciler) mutateSecret(
 	secret *corev1.Secret,
 	clusterProfile *clusterinventory.ClusterProfile,
 ) error {
-	labels := map[string]string{}
+	clusterName := clusterProfileClusterName(clusterProfile)
+	labels := make(map[string]string, len(clusterProfile.Labels)+2)
 	maps.Copy(labels, clusterProfile.Labels)
 	labels[common.LabelKeySecretType] = common.LabelValueSecretTypeCluster
-	labels[clusterProfileOriginLabel] = fmt.Sprintf("%s-%s", clusterProfile.Namespace, clusterProfile.Name)
+	labels[clusterProfileOriginLabel] = clusterName
 	secret.Labels = labels
 
 	clusterConfig, server, err := r.buildClusterConfig(clusterProfile)
@@ -143,11 +148,30 @@ func (r *ClusterProfileReconciler) mutateSecret(
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 	secret.StringData = map[string]string{
-		secretDataNameKey:   clusterProfile.Name,
+		secretDataNameKey:   clusterName,
 		secretDataServerKey: server,
 		secretDataConfigKey: string(configBytes),
 	}
 	return nil
+}
+
+func clusterProfileClusterName(clusterProfile *clusterinventory.ClusterProfile) string {
+	return fmt.Sprintf("%s-%s", clusterProfile.Namespace, clusterProfile.Name)
+}
+
+func clusterProfileSecretName(clusterProfile *clusterinventory.ClusterProfile) string {
+	return truncateSecretName(fmt.Sprintf(secretNameTemplate, clusterProfileClusterName(clusterProfile)))
+}
+
+func truncateSecretName(name string) string {
+	if len(name) <= maxSecretNameLength {
+		return name
+	}
+	sum := sha256.Sum256([]byte(name))
+	suffix := "-" + fmt.Sprintf("%x", sum)[:secretNameHashLength]
+	// Trim trailing separators so the truncated prefix doesn't produce a doubled "--" or "-." before the suffix.
+	prefix := strings.TrimRight(name[:maxSecretNameLength-len(suffix)], "-.")
+	return prefix + suffix
 }
 
 // buildClusterConfig resolves a ClusterProfile into the Argo CD cluster config and server URL.

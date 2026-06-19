@@ -407,6 +407,7 @@ Check that the Argo CD cluster secret was generated from the ClusterProfile:
 ```bash
 kubectl get secrets -l argocd.argoproj.io/secret-type=cluster
 ```
+The generated cluster Secret and Argo CD cluster name include the ClusterProfile namespace, for example `cluster-argocd-managed1` and `argocd-managed1`.
 
 Verify the application was created:
 ```bash

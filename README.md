@@ -37,11 +37,9 @@ status:
       server: https://my-cluster.example.com
 ```
 
-The controller will also update the `ClusterProfile`'s status to include the `Secret`'s name and namespace.
-
 These `ClusterProfile` resources may be synced automatically by a cluster manager or created manually. The `ClusterProfile` CRD from the [Cluster Inventory API](https://github.com/kubernetes-sigs/cluster-inventory-api) is automatically installed when you deploy the standalone controller.
 
-When running as a standalone controller, it watches for `ClusterProfile` objects and generates `Secret`s for Argo CD. The generated `Secret`s are labeled with `argocd.argoproj.io/secret-type: cluster` and `argocd.argoproj.io/cluster-profile-origin`, and also include labels from the source `ClusterProfile`.
+When running as a standalone controller, it watches for `ClusterProfile` objects and generates `Secret`s for Argo CD. The generated `Secret` is named `cluster-<ClusterProfile namespace>-<ClusterProfile name>` and its Argo CD cluster name is `<ClusterProfile namespace>-<ClusterProfile name>`, which keeps clusters unique when watching multiple namespaces. The generated `Secret`s are labeled with `argocd.argoproj.io/secret-type: cluster` and `argocd.argoproj.io/cluster-profile-origin`, and also include labels from the source `ClusterProfile`.
 
 
 ### Authentication
@@ -119,6 +117,9 @@ helm upgrade --install argocd-clusterprofile-controller \
 ```
 
 To provide an access providers file to the controller, you should configure the `argocd-clusterprofile-controller` deployment with the `--clusterprofile-provider-file` argument (or `ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTERPROFILE_PROVIDER_FILE` environment variable). This should point to a mounted file that contains the configuration for the access providers.
+
+> [!NOTE]
+> Generated cluster Secret names include the source `ClusterProfile` namespace. Upgrades from older releases that produced `cluster-<ClusterProfile name>` Secrets do not migrate or delete those old Secrets automatically.
 
 ### Configuration Parameters
 

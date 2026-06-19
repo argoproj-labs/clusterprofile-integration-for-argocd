@@ -18,9 +18,10 @@ SECRETREADER_COMMAND="${SECRETREADER_COMMAND:-/plugins/secretreader/bin/secretre
 HUB_CLUSTER="${HUB_CLUSTER:-${E2E_PREFIX}-hub}"
 SPOKE_CLUSTER="${SPOKE_CLUSTER:-${E2E_PREFIX}-spoke}"
 ARGOCD_NS="${ARGOCD_NS:-argocd}"
-APP_NAME="guestbook-spoke-cluster-full"
 CP_NAME="spoke-cluster-full"
-SECRET_NAME="cluster-${CP_NAME}"
+CLUSTER_NAME="${ARGOCD_NS}-${CP_NAME}"
+APP_NAME="guestbook-${CLUSTER_NAME}"
+SECRET_NAME="cluster-${CLUSTER_NAME}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -173,13 +174,13 @@ verify_argocd_server_cluster_access() {
     )" || return 1
     [ "$(
       printf '%s' "${cluster_json}" | jq -r \
-        --arg name "${CP_NAME}" \
+        --arg name "${CLUSTER_NAME}" \
         --arg server "https://${SPOKE_IP}:6443" \
         'first(.[] | select(.name == $name and .server == $server) | .connectionState.status) // ""'
     )" = "Successful" ]
   }
-  if ! retry_until 120 "Argo CD server cluster connection to ${CP_NAME}" _cluster_connection_successful; then
-    echo "Argo CD server did not report a successful connection to ${CP_NAME}" >&2
+  if ! retry_until 120 "Argo CD server cluster connection to ${CLUSTER_NAME}" _cluster_connection_successful; then
+    echo "Argo CD server did not report a successful connection to ${CLUSTER_NAME}" >&2
     printf '%s\n' "${cluster_json}" | jq . || printf '%s\n' "${cluster_json}"
     return 1
   fi
@@ -482,6 +483,7 @@ test "$(printf '%s' "${SECRET_JSON}" | jq -r '.metadata.labels["argocd.argoproj.
 test "$(printf '%s' "${SECRET_JSON}" | jq -r '.metadata.labels["argocd.argoproj.io/cluster-profile-origin"]')" = "${ARGOCD_NS}-${CP_NAME}"
 test "$(printf '%s' "${SECRET_JSON}" | jq -r '.metadata.labels.environment')" = "e2e"
 test "$(printf '%s' "${SECRET_JSON}" | jq -r '.metadata.labels.team')" = "platform"
+test "$(printf '%s' "${SECRET_JSON}" | jq -r '.data.name' | base64 -d)" = "${CLUSTER_NAME}"
 test "$(printf '%s' "${SECRET_JSON}" | jq -r '.data.server' | base64 -d)" = "https://${SPOKE_IP}:6443"
 test "$(printf '%s' "${CONFIG}" | jq -r '.execProviderConfig.command')" = "${SECRETREADER_COMMAND}"
 test "$(printf '%s' "${CONFIG}" | jq -r '.execProviderConfig.args // [] | length')" = "0"

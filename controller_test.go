@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,10 +30,11 @@ import (
 
 const (
 	testClusterName      = "test-cluster"
+	testClusterArgoName  = "default-test-cluster"
 	testNamespace        = "default"
 	testServer           = "https://test-cluster.example.com"
-	testSecretName       = "cluster-test-cluster"
-	testOriginLabelValue = "default-test-cluster"
+	testSecretName       = "cluster-default-test-cluster"
+	testOriginLabelValue = testClusterArgoName
 	testProviderName     = "secretreader"
 	testProviderCommand  = "/plugins/secretreader/bin/secretreader-plugin"
 	argocdNamespace      = "argocd"
@@ -161,7 +164,7 @@ func TestClusterProfileReconciler(t *testing.T) {
 			assert.Equal(t, argocdNamespace, secret.Namespace)
 			assert.Equal(t, "cluster", secret.Labels["argocd.argoproj.io/secret-type"])
 			assert.Equal(t, testOriginLabelValue, secret.Labels["argocd.argoproj.io/cluster-profile-origin"])
-			assert.Equal(t, testClusterName, secret.StringData[secretDataNameKey])
+			assert.Equal(t, testClusterArgoName, secret.StringData[secretDataNameKey])
 			assert.Equal(t, testServer, secret.StringData[secretDataServerKey])
 
 			var configMap map[string]any
@@ -311,6 +314,47 @@ func TestClusterProfileReconciler(t *testing.T) {
 			assert.Equal(t, "platform", secret.Labels["team"])
 			assert.Equal(t, common.LabelValueSecretTypeCluster, secret.Labels[common.LabelKeySecretType])
 			assert.Equal(t, testOriginLabelValue, secret.Labels[clusterProfileOriginLabel])
+		})
+
+		t.Run("should avoid collisions for ClusterProfiles with the same name in different namespaces", func(t *testing.T) {
+			teamAProfile := newBuiltinProviderClusterProfile(nil)
+			teamAProfile.Namespace = teamANamespace
+			teamBProfile := newBuiltinProviderClusterProfile(nil)
+			teamBProfile.Namespace = teamBNamespace
+
+			r := &ClusterProfileReconciler{
+				Client:    fake.NewClientBuilder().WithScheme(scheme).WithObjects(teamAProfile, teamBProfile).Build(),
+				Log:       logr.Discard(),
+				Scheme:    scheme,
+				Namespace: argocdNamespace,
+			}
+
+			_, err := r.Reconcile(context.Background(), reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: testClusterName, Namespace: teamANamespace},
+			})
+			require.NoError(t, err)
+			_, err = r.Reconcile(context.Background(), reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: testClusterName, Namespace: teamBNamespace},
+			})
+			require.NoError(t, err)
+
+			var teamASecret corev1.Secret
+			err = r.Get(
+				context.Background(),
+				types.NamespacedName{Name: "cluster-team-a-test-cluster", Namespace: argocdNamespace},
+				&teamASecret,
+			)
+			require.NoError(t, err)
+			assert.Equal(t, "team-a-test-cluster", teamASecret.StringData[secretDataNameKey])
+
+			var teamBSecret corev1.Secret
+			err = r.Get(
+				context.Background(),
+				types.NamespacedName{Name: "cluster-team-b-test-cluster", Namespace: argocdNamespace},
+				&teamBSecret,
+			)
+			require.NoError(t, err)
+			assert.Equal(t, "team-b-test-cluster", teamBSecret.StringData[secretDataNameKey])
 		})
 
 		t.Run("should protect controller-owned secret labels from ClusterProfile labels", func(t *testing.T) {
@@ -637,6 +681,34 @@ func TestClusterProfileReconciler(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "unable to delete secret")
 		})
+	})
+}
+
+func TestClusterProfileSecretName(t *testing.T) {
+	t.Run("uses namespace-qualified cluster names in generated Secret names", func(t *testing.T) {
+		clusterProfile := &clusterinventory.ClusterProfile{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      testClusterName,
+				Namespace: testNamespace,
+			},
+		}
+
+		assert.Equal(t, testClusterArgoName, clusterProfileClusterName(clusterProfile))
+		assert.Equal(t, testSecretName, clusterProfileSecretName(clusterProfile))
+	})
+
+	t.Run("truncates long names with a deterministic hash suffix", func(t *testing.T) {
+		clusterProfile := &clusterinventory.ClusterProfile{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      strings.Repeat("a", 250),
+				Namespace: testNamespace,
+			},
+		}
+		secretName := clusterProfileSecretName(clusterProfile)
+
+		assert.Len(t, secretName, maxSecretNameLength)
+		assert.Equal(t, secretName, clusterProfileSecretName(clusterProfile))
+		assert.NotEqual(t, fmt.Sprintf(secretNameTemplate, clusterProfileClusterName(clusterProfile)), secretName)
 	})
 }
 

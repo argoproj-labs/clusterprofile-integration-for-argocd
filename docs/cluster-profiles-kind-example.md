@@ -328,8 +328,13 @@ EOF
 
 Everything should now be in place!
 
-Verify that the application was created and synced:
+The generated Argo CD cluster Secret is named `cluster-argocd-spoke-cluster`, and the Argo CD cluster name is `argocd-spoke-cluster`.
+
+Verify that the application `guestbook-argocd-spoke-cluster` was created and synced:
 ```bash
+kubectl config use-context kind-hub
+kubectl -n argocd get secret cluster-argocd-spoke-cluster
+kubectl -n argocd get application guestbook-argocd-spoke-cluster
 kubectl config use-context kind-spoke
 kubectl get pods -n guestbook
 ```
