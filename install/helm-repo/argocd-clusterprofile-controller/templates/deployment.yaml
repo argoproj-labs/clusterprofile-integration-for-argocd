@@ -1,0 +1,240 @@
+{{- if and .Values.controller.clusterScoped (gt (len .Values.controller.clusterProfileNamespaces) 0) }}
+{{- fail "controller.clusterScoped and controller.clusterProfileNamespaces are mutually exclusive" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "argocd-clusterprofile-controller.fullname" . }}
+  namespace: {{ include "argocd-clusterprofile-controller.namespace" . }}
+  labels:
+    {{- include "argocd-clusterprofile-controller.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "argocd-clusterprofile-controller.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "argocd-clusterprofile-controller.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "argocd-clusterprofile-controller.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: argocd-clusterprofile-controller
+          image: "{{ .Values.image.repository }}:{{ include "argocd-clusterprofile-controller.defaultTag" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --metrics-addr={{ .Values.controller.metricsAddr }}
+            - --probe-addr={{ .Values.controller.probeAddr }}
+            {{- if .Values.controller.clusterProfileProvidersFile }}
+            - --clusterprofile-provider-file={{ .Values.controller.clusterProfileProvidersFile }}
+            {{- end }}
+            {{- if .Values.controller.clusterScoped }}
+            - --cluster-profile-all-namespaces
+            {{- end }}
+            {{- if .Values.controller.clusterProfileNamespaces }}
+            - --cluster-profile-namespaces={{ join "," .Values.controller.clusterProfileNamespaces }}
+            {{- end }}
+            {{- if .Values.controller.enableLeaderElection }}
+            - --enable-leader-election
+            {{- end }}
+            {{- if .Values.controller.dryRun }}
+            - --dry-run
+            {{- end }}
+            {{- if .Values.controller.debug }}
+            - --debug
+            {{- end }}
+            {{- if .Values.controller.logFormat }}
+            - --logformat={{ .Values.controller.logFormat }}
+            {{- end }}
+            {{- if .Values.controller.logLevel }}
+            - --loglevel={{ .Values.controller.logLevel }}
+            {{- end }}
+            {{- range .Values.controller.args }}
+            - {{ . | quote }}
+            {{- end }}
+          ports:
+            - containerPort: {{ include "argocd-clusterprofile-controller.metricsPort" . }}
+              name: metrics
+            - containerPort: {{ include "argocd-clusterprofile-controller.probePort" . }}
+              name: healthz
+          env:
+            {{- if .Values.controller.argoCDCmdParams.enabled }}
+            - name: GRPC_ENABLE_TXT_SERVICE_CONFIG
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "argocd-clusterprofile-controller.cmdParamsConfigMapName" . }}
+                  key: clusterprofilecontroller.grpc.enable.txt.service.config
+                  optional: true
+            {{- end }}
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- if .Values.controller.argoCDCmdParams.enabled }}
+            - name: ARGOCD_CLUSTERPROFILE_CONTROLLER_ENABLE_LEADER_ELECTION
+              valueFrom:
+                configMapKeyRef:
+                  key: clusterprofilecontroller.enable.leader.election
+                  name: {{ include "argocd-clusterprofile-controller.cmdParamsConfigMapName" . }}
+                  optional: true
+            - name: ARGOCD_CLUSTERPROFILE_CONTROLLER_DEBUG
+              valueFrom:
+                configMapKeyRef:
+                  key: clusterprofilecontroller.debug
+                  name: {{ include "argocd-clusterprofile-controller.cmdParamsConfigMapName" . }}
+                  optional: true
+            - name: ARGOCD_CLUSTERPROFILE_CONTROLLER_LOGFORMAT
+              valueFrom:
+                configMapKeyRef:
+                  key: clusterprofilecontroller.log.format
+                  name: {{ include "argocd-clusterprofile-controller.cmdParamsConfigMapName" . }}
+                  optional: true
+            - name: ARGOCD_CLUSTERPROFILE_CONTROLLER_LOGLEVEL
+              valueFrom:
+                configMapKeyRef:
+                  key: clusterprofilecontroller.log.level
+                  name: {{ include "argocd-clusterprofile-controller.cmdParamsConfigMapName" . }}
+                  optional: true
+            - name: ARGOCD_LOG_FORMAT_TIMESTAMP
+              valueFrom:
+                configMapKeyRef:
+                  key: log.format.timestamp
+                  name: {{ include "argocd-clusterprofile-controller.cmdParamsConfigMapName" . }}
+                  optional: true
+            - name: ARGOCD_K8S_CLIENT_QPS
+              valueFrom:
+                configMapKeyRef:
+                  key: clusterprofilecontroller.k8s.client.qps
+                  name: {{ include "argocd-clusterprofile-controller.cmdParamsConfigMapName" . }}
+                  optional: true
+            - name: ARGOCD_K8S_CLIENT_BURST
+              valueFrom:
+                configMapKeyRef:
+                  key: clusterprofilecontroller.k8s.client.burst
+                  name: {{ include "argocd-clusterprofile-controller.cmdParamsConfigMapName" . }}
+                  optional: true
+            - name: ARGOCD_K8S_CLIENT_MAX_IDLE_CONNECTIONS
+              valueFrom:
+                configMapKeyRef:
+                  key: clusterprofilecontroller.k8s.client.max.idle.connections
+                  name: {{ include "argocd-clusterprofile-controller.cmdParamsConfigMapName" . }}
+                  optional: true
+            - name: ARGOCD_K8S_TCP_TIMEOUT
+              valueFrom:
+                configMapKeyRef:
+                  key: clusterprofilecontroller.k8s.tcp.timeout
+                  name: {{ include "argocd-clusterprofile-controller.cmdParamsConfigMapName" . }}
+                  optional: true
+            - name: ARGOCD_K8S_TCP_KEEPALIVE
+              valueFrom:
+                configMapKeyRef:
+                  key: clusterprofilecontroller.k8s.tcp.keepalive
+                  name: {{ include "argocd-clusterprofile-controller.cmdParamsConfigMapName" . }}
+                  optional: true
+            - name: ARGOCD_K8S_TLS_HANDSHAKE_TIMEOUT
+              valueFrom:
+                configMapKeyRef:
+                  key: clusterprofilecontroller.k8s.tls.handshake.timeout
+                  name: {{ include "argocd-clusterprofile-controller.cmdParamsConfigMapName" . }}
+                  optional: true
+            - name: ARGOCD_K8S_TCP_IDLE_TIMEOUT
+              valueFrom:
+                configMapKeyRef:
+                  key: clusterprofilecontroller.k8s.tcp.idle.timeout
+                  name: {{ include "argocd-clusterprofile-controller.cmdParamsConfigMapName" . }}
+                  optional: true
+            - name: ARGOCD_CLUSTERPROFILE_CONTROLLER_DRY_RUN
+              valueFrom:
+                configMapKeyRef:
+                  key: clusterprofilecontroller.dryrun
+                  name: {{ include "argocd-clusterprofile-controller.cmdParamsConfigMapName" . }}
+                  optional: true
+            {{- if not .Values.controller.clusterScoped }}
+            - name: ARGOCD_CLUSTERPROFILE_CONTROLLER_NAMESPACES
+              valueFrom:
+                configMapKeyRef:
+                  key: clusterprofilecontroller.namespaces
+                  name: {{ include "argocd-clusterprofile-controller.cmdParamsConfigMapName" . }}
+                  optional: true
+            {{- end }}
+            {{- if not .Values.controller.clusterProfileNamespaces }}
+            - name: ARGOCD_CLUSTERPROFILE_CONTROLLER_ALL_NAMESPACES
+              valueFrom:
+                configMapKeyRef:
+                  key: clusterprofilecontroller.all.namespaces
+                  name: {{ include "argocd-clusterprofile-controller.cmdParamsConfigMapName" . }}
+                  optional: true
+            {{- end }}
+            {{- end }}
+            {{- with .Values.controller.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.controller.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - mountPath: /tmp
+              name: tmp
+            {{- if .Values.controller.argoCDCmdParams.enabled }}
+            - name: argocd-cmd-params-cm
+              mountPath: /home/argocd/params
+            {{- end }}
+            {{- with .Values.controller.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - emptyDir: {}
+          name: tmp
+        {{- if .Values.controller.argoCDCmdParams.enabled }}
+        - name: argocd-cmd-params-cm
+          configMap:
+            optional: true
+            name: {{ include "argocd-clusterprofile-controller.cmdParamsConfigMapName" . }}
+        {{- end }}
+        {{- with .Values.controller.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.priorityClassName }}
+      priorityClassName: {{ .Values.priorityClassName }}
+      {{- end }}

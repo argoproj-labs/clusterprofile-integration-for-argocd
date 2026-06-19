@@ -17,9 +17,7 @@ spec:
         app.kubernetes.io/name: argocd-clusterprofile-controller
     spec:
       containers:
-        - args:
-            - /manager
-          image: ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd:latest
+        - image: ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd:latest
           imagePullPolicy: IfNotPresent
           name: argocd-clusterprofile-controller
           ports:
@@ -118,6 +116,12 @@ spec:
               valueFrom:
                 configMapKeyRef:
                   key: clusterprofilecontroller.namespaces
+                  name: argocd-cmd-params-cm
+                  optional: true
+            - name: ARGOCD_CLUSTERPROFILE_CONTROLLER_ALL_NAMESPACES
+              valueFrom:
+                configMapKeyRef:
+                  key: clusterprofilecontroller.all.namespaces
                   name: argocd-cmd-params-cm
                   optional: true
           volumeMounts:

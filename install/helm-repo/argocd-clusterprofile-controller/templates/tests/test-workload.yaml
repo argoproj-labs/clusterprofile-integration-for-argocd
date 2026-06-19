@@ -1,0 +1,31 @@
+{{- if .Values.tests.enabled }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "argocd-clusterprofile-controller.testResourceName" . }}-workload
+  namespace: {{ include "argocd-clusterprofile-controller.namespace" . }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
+spec:
+  serviceAccountName: {{ include "argocd-clusterprofile-controller.testResourceName" . }}
+  restartPolicy: Never
+  containers:
+    - name: kubectl
+      image: "{{ .Values.tests.image }}:{{ .Values.tests.tag }}"
+      command:
+        - sh
+        - -c
+        - |
+          set -eu
+          DEPLOYMENT={{ include "argocd-clusterprofile-controller.fullname" . | quote }}
+          NAMESPACE={{ include "argocd-clusterprofile-controller.namespace" . | quote }}
+          kubectl get deployment "$DEPLOYMENT" -n "$NAMESPACE"
+          kubectl get deployment "$DEPLOYMENT" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].image}' | grep -q ':'
+          {{- if .Values.service.metrics.enabled }}
+          kubectl get service "$DEPLOYMENT" -n "$NAMESPACE"
+          {{- end }}
+          {{- if .Values.controller.clusterScoped }}
+          kubectl get crd clusterprofiles.multicluster.x-k8s.io
+          {{- end }}
+{{- end }}

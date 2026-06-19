@@ -44,12 +44,49 @@ jobs:
       - name: Build manager
         run: go build ./...
 
+  helm:
+    name: Helm
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v3.18.3
+
+      - name: Validate Helm chart
+        run: make validate-values-schema
+
+      - name: Render default chart
+        run: helm template argocd-clusterprofile-controller install/helm-repo/argocd-clusterprofile-controller --namespace argocd
+
+      - name: Render cluster-scoped chart
+        run: helm template argocd-clusterprofile-controller install/helm-repo/argocd-clusterprofile-controller --namespace argocd --set controller.clusterScoped=true
+
+      - name: Reject conflicting watch scope values
+        run: |
+          set -euo pipefail
+          if helm template argocd-clusterprofile-controller install/helm-repo/argocd-clusterprofile-controller --namespace argocd --set controller.clusterScoped=true --set controller.clusterProfileNamespaces[0]=team-a 2>helm-error.log; then
+            echo "expected Helm render to fail for conflicting watch scope values" >&2
+            exit 1
+          fi
+          cat helm-error.log
+          grep -q "mutually exclusive" helm-error.log
+
+      - name: Package chart
+        run: helm package install/helm-repo/argocd-clusterprofile-controller --destination /tmp/charts --version 0.1.0 --app-version v0.1.0
+
   e2e:
     name: E2E
     runs-on: ubuntu-latest
     needs:
       - lint
       - go
+      - helm
     timeout-minutes: 30
     steps:
       - name: Checkout code

@@ -6,6 +6,7 @@ import (
 	"runtime/debug"
 
 	"github.com/spf13/cobra"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
@@ -33,14 +34,15 @@ const (
 
 func NewCommand() *cobra.Command {
 	var (
-		clientConfig               clientcmd.ClientConfig
-		metricsAddr                string
-		probeAddr                  string
-		enableLeaderElection       bool
-		clusterProfileNamespaces   []string
-		debugLog                   bool
-		dryRun                     bool
-		clusterProfileProviderFile string
+		clientConfig                clientcmd.ClientConfig
+		metricsAddr                 string
+		probeAddr                   string
+		enableLeaderElection        bool
+		clusterProfileNamespaces    []string
+		clusterProfileAllNamespaces bool
+		debugLog                    bool
+		dryRun                      bool
+		clusterProfileProviderFile  string
 	)
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
@@ -54,7 +56,12 @@ func NewCommand() *cobra.Command {
 			vers := common.GetVersion()
 			namespace, _, err := clientConfig.Namespace()
 			errors.CheckError(err)
-			clusterProfileNamespaces = append(clusterProfileNamespaces, namespace)
+
+			if clusterProfileAllNamespaces && len(clusterProfileNamespaces) > 0 {
+				errors.CheckError(fmt.Errorf(
+					"can't use both --cluster-profile-all-namespaces and --cluster-profile-namespaces",
+				))
+			}
 
 			vers.LogStartupInfo(
 				"ArgoCD Cluster Profile Controller",
@@ -79,31 +86,14 @@ func NewCommand() *cobra.Command {
 				}
 			}()
 
-			restConfig, err := clientConfig.ClientConfig()
-			errors.CheckError(err)
-
-			restConfig.UserAgent = fmt.Sprintf("argocd-clusterprofile-controller/%s (%s)", vers.Version, vers.Platform)
-
-			var watchedNamespace string
-			if len(clusterProfileNamespaces) == 1 {
-				watchedNamespace = (clusterProfileNamespaces)[0]
-			}
-
-			var cacheOpt cache.Options
-			if watchedNamespace != "" {
-				cacheOpt = cache.Options{
-					DefaultNamespaces: map[string]cache.Config{
-						watchedNamespace: {},
-					},
-				}
-			}
-
 			cfg := ctrl.GetConfigOrDie()
-			err = appv1alpha1.SetK8SConfigDefaults(cfg)
-			if err != nil {
+			cfg.UserAgent = fmt.Sprintf("argocd-clusterprofile-controller/%s (%s)", vers.Version, vers.Platform)
+			if err = appv1alpha1.SetK8SConfigDefaults(cfg); err != nil {
 				log.Error(err, "Unable to apply K8s REST config defaults")
 				os.Exit(1)
 			}
+
+			cacheOpt := buildCacheOptions(namespace, clusterProfileNamespaces, clusterProfileAllNamespaces)
 
 			mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 				Scheme: scheme,
@@ -167,6 +157,12 @@ func NewCommand() *cobra.Command {
 		"Argo CD cluster profile namespaces",
 	)
 	command.Flags().BoolVar(
+		&clusterProfileAllNamespaces,
+		"cluster-profile-all-namespaces",
+		env.ParseBoolFromEnv("ARGOCD_CLUSTERPROFILE_CONTROLLER_ALL_NAMESPACES", false),
+		"Watch ClusterProfile resources in all namespaces",
+	)
+	command.Flags().BoolVar(
 		&debugLog,
 		"debug",
 		env.ParseBoolFromEnv("ARGOCD_CLUSTERPROFILE_CONTROLLER_DEBUG", false),
@@ -198,6 +194,35 @@ func NewCommand() *cobra.Command {
 	)
 
 	return &command
+}
+
+// buildCacheOptions scopes Secrets to the controller namespace and ClusterProfiles to the
+// requested namespaces (all namespaces when clusterProfileAllNamespaces is set).
+func buildCacheOptions(
+	controllerNamespace string,
+	clusterProfileNamespaces []string,
+	clusterProfileAllNamespaces bool,
+) cache.Options {
+	controllerNamespaces := map[string]cache.Config{controllerNamespace: {}}
+
+	clusterProfileNamespaceConfigs := map[string]cache.Config{}
+	if !clusterProfileAllNamespaces {
+		namespaces := clusterProfileNamespaces
+		if len(namespaces) == 0 {
+			namespaces = []string{controllerNamespace}
+		}
+		for _, namespace := range namespaces {
+			clusterProfileNamespaceConfigs[namespace] = cache.Config{}
+		}
+	}
+
+	return cache.Options{
+		DefaultNamespaces: controllerNamespaces,
+		ByObject: map[ctrlclient.Object]cache.ByObject{
+			&clusterv1alpha1.ClusterProfile{}: {Namespaces: clusterProfileNamespaceConfigs},
+			&corev1.Secret{}:                  {Namespaces: controllerNamespaces},
+		},
+	}
 }
 
 func main() {

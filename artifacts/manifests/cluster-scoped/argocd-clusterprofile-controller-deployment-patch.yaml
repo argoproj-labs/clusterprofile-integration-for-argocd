@@ -1,0 +1,14 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-clusterprofile-controller
+spec:
+  template:
+    spec:
+      containers:
+      - name: argocd-clusterprofile-controller
+        args:
+        - --cluster-profile-all-namespaces
+        env:
+        - name: ARGOCD_CLUSTERPROFILE_CONTROLLER_NAMESPACES
+          $patch: delete

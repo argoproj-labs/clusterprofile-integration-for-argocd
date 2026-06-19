@@ -423,91 +423,20 @@ rules:
   - multicluster.x-k8s.io
   resources:
   - clusterprofiles
-  - clusterprofiles/status
-  - clusterprofiles/finalizers
   verbs:
-  - create
-  - delete
   - get
   - list
   - patch
   - update
-  - watch
-- apiGroups:
-  - coordination.k8s.io
-  resources:
-  - leases
-  verbs:
-  - create
-- apiGroups:
-  - coordination.k8s.io
-  resourceNames:
-  - clusterprofile.argoproj.io
-  resources:
-  - leases
-  verbs:
-  - get
-  - update
-  - create
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  labels:
-    app.kubernetes.io/component: clusterprofile-controller
-    app.kubernetes.io/name: argocd-clusterprofile-controller
-    app.kubernetes.io/part-of: argocd
-  name: argocd-clusterprofile-controller
-rules:
-- apiGroups:
-  - argoproj.io
-  resources:
-  - applications
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - argoproj.io
-  resources:
-  - appprojects
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - events
-  verbs:
-  - create
-  - get
-  - list
-  - patch
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - secrets
-  - configmaps
-  verbs:
-  - get
-  - list
   - watch
 - apiGroups:
   - multicluster.x-k8s.io
   resources:
-  - clusterprofiles
-  - clusterprofiles/status
   - clusterprofiles/finalizers
   verbs:
-  - create
-  - delete
   - get
-  - list
   - patch
   - update
-  - watch
 - apiGroups:
   - coordination.k8s.io
   resources:
@@ -540,23 +469,6 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: argocd-clusterprofile-controller
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  labels:
-    app.kubernetes.io/component: clusterprofile-controller
-    app.kubernetes.io/name: argocd-clusterprofile-controller
-    app.kubernetes.io/part-of: argocd
-  name: argocd-clusterprofile-controller
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: argocd-clusterprofile-controller
-subjects:
-- kind: ServiceAccount
-  name: argocd-clusterprofile-controller
-  namespace: argocd
 ---
 apiVersion: v1
 kind: Service
@@ -594,9 +506,7 @@ spec:
         app.kubernetes.io/name: argocd-clusterprofile-controller
     spec:
       containers:
-      - args:
-        - /manager
-        env:
+      - env:
         - name: GRPC_ENABLE_TXT_SERVICE_CONFIG
           valueFrom:
             configMapKeyRef:
@@ -689,6 +599,12 @@ spec:
           valueFrom:
             configMapKeyRef:
               key: clusterprofilecontroller.namespaces
+              name: argocd-cmd-params-cm
+              optional: true
+        - name: ARGOCD_CLUSTERPROFILE_CONTROLLER_ALL_NAMESPACES
+          valueFrom:
+            configMapKeyRef:
+              key: clusterprofilecontroller.all.namespaces
               name: argocd-cmd-params-cm
               optional: true
         image: ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd:latest

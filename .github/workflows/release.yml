@@ -15,6 +15,8 @@ jobs:
     outputs:
       is_latest_release: ${{ steps.var.outputs.is_latest_release }}
       image_name: ${{ steps.var.outputs.image_name }}
+      chart_repository: ${{ steps.var.outputs.chart_repository }}
+      trimmed_tag: ${{ steps.var.outputs.trimmed_tag }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -25,8 +27,13 @@ jobs:
       - name: Setup variables
         id: var
         run: |
-          set -xue
+          set -euo pipefail
           git fetch --prune --tags --force
+
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "release tags must use vX.Y.Z format, got ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
 
           LATEST_RELEASE_TAG=$(git tag --list 'v*' --sort=version:refname | tail -n 1)
           IS_LATEST_RELEASE=false
@@ -35,6 +42,8 @@ jobs:
           fi
           echo "is_latest_release=$IS_LATEST_RELEASE" >> "$GITHUB_OUTPUT"
           echo "image_name=ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd" >> "$GITHUB_OUTPUT"
+          echo "chart_repository=ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd" >> "$GITHUB_OUTPUT"
+          echo "trimmed_tag=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
   container-image:
     name: Build and push release container image
@@ -74,3 +83,45 @@ jobs:
           tags: |
             ${{ needs.setup-variables.outputs.image_name }}:${{ github.ref_name }}
             ${{ needs.setup-variables.outputs.is_latest_release == 'true' && format('{0}:latest', needs.setup-variables.outputs.image_name) || '' }}
+
+  helm-chart:
+    name: Package and push release Helm chart
+    needs:
+      - setup-variables
+      - container-image
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-22.04
+    if: github.repository == 'argoproj-labs/clusterprofile-integration-for-argocd'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v3.18.3
+
+      - name: Package chart
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/charts
+          helm lint --strict install/helm-repo/argocd-clusterprofile-controller
+          helm package install/helm-repo/argocd-clusterprofile-controller \
+            --destination /tmp/charts \
+            --version "${TRIMMED_TAG}" \
+            --app-version "${GITHUB_REF_NAME}"
+        env:
+          TRIMMED_TAG: ${{ needs.setup-variables.outputs.trimmed_tag }}
+
+      - name: Login to ghcr.io
+        run: echo "${GITHUB_TOKEN}" | helm registry login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push chart
+        run: helm push /tmp/charts/*.tgz "oci://${{ needs.setup-variables.outputs.chart_repository }}"

@@ -4,7 +4,11 @@ IMAGE_NAME=clusterprofile-integration-for-argocd
 IMAGE_PLATFORM?=linux/amd64
 IMAGE_MULTIARCH_PLATFORMS?=linux/amd64,linux/arm64
 IMAGE_TAG?=latest
+HELM_DOCS_VERSION?=v1.14.2
 IMG ?= $(IMAGE_REPOSITORY)/$(IMAGE_NAME):$(IMAGE_TAG)
+HELM_CHART_DIRS := $(patsubst %/Chart.yaml,%,$(wildcard install/helm-repo/*/Chart.yaml))
+
+current_dir := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -78,3 +82,17 @@ image-multiarch: ## Build and push multi-arch container image.
 .PHONY: push-image
 push-image: ## Push single-arch container image.
 	docker push $(IMG)
+
+##@ Helm
+
+.PHONY: helm-lint
+helm-lint: ## Lint Helm charts.
+	helm lint --strict $(HELM_CHART_DIRS)
+
+.PHONY: validate-values-schema
+validate-values-schema: ## Validate Helm chart values schemas.
+	bash $(current_dir)/hack/validate-values-schema.sh
+
+.PHONY: generate-helm-docs
+generate-helm-docs: ## Generate Helm chart README files.
+	docker run --rm --volume "$(current_dir)/install/helm-repo:/helm-docs" -u $(shell id -u) docker.io/jnorwood/helm-docs:$(HELM_DOCS_VERSION)

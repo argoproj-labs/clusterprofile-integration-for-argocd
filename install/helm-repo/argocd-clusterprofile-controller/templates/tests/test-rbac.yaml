@@ -1,0 +1,103 @@
+{{- if .Values.tests.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "argocd-clusterprofile-controller.testResourceName" . }}
+  namespace: {{ include "argocd-clusterprofile-controller.namespace" . }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "argocd-clusterprofile-controller.testResourceName" . }}
+  namespace: {{ include "argocd-clusterprofile-controller.namespace" . }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
+rules:
+  - apiGroups: ["", "apps", "rbac.authorization.k8s.io"]
+    resources: ["pods", "services", "endpoints", "deployments", "serviceaccounts", "roles", "rolebindings"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "argocd-clusterprofile-controller.testResourceName" . }}
+  namespace: {{ include "argocd-clusterprofile-controller.namespace" . }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "argocd-clusterprofile-controller.testResourceName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "argocd-clusterprofile-controller.testResourceName" . }}
+{{ if .Values.controller.clusterScoped }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "argocd-clusterprofile-controller.testResourceName" . }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
+rules:
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list"]
+  {{- if and .Values.rbac.create .Values.controller.clusterScoped }}
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles", "clusterrolebindings"]
+    verbs: ["get", "list"]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "argocd-clusterprofile-controller.testResourceName" . }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "argocd-clusterprofile-controller.testResourceName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "argocd-clusterprofile-controller.testResourceName" . }}
+    namespace: {{ include "argocd-clusterprofile-controller.namespace" . }}
+{{ end }}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "argocd-clusterprofile-controller.testResourceName" . }}-rbac
+  namespace: {{ include "argocd-clusterprofile-controller.namespace" . }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
+spec:
+  serviceAccountName: {{ include "argocd-clusterprofile-controller.testResourceName" . }}
+  restartPolicy: Never
+  containers:
+    - name: kubectl
+      image: "{{ .Values.tests.image }}:{{ .Values.tests.tag }}"
+      command:
+        - sh
+        - -c
+        - |
+          set -eu
+          kubectl get serviceaccount {{ include "argocd-clusterprofile-controller.serviceAccountName" . | quote }} -n {{ include "argocd-clusterprofile-controller.namespace" . | quote }}
+          {{- if .Values.rbac.create }}
+          kubectl get role {{ include "argocd-clusterprofile-controller.fullname" . | quote }} -n {{ include "argocd-clusterprofile-controller.namespace" . | quote }}
+          kubectl get rolebinding {{ include "argocd-clusterprofile-controller.fullname" . | quote }} -n {{ include "argocd-clusterprofile-controller.namespace" . | quote }}
+          {{- end }}
+          {{- if and .Values.rbac.create .Values.controller.clusterScoped }}
+          kubectl get clusterrole {{ include "argocd-clusterprofile-controller.fullname" . | quote }}
+          kubectl get clusterrolebinding {{ include "argocd-clusterprofile-controller.fullname" . | quote }}
+          {{- end }}
+{{- end }}

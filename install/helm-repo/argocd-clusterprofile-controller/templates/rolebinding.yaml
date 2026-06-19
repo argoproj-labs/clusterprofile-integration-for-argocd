@@ -1,0 +1,19 @@
+{{- if and .Values.rbac.create (not .Values.serviceAccount.create) (empty .Values.serviceAccount.name) }}
+{{- fail "serviceAccount.name must be set when serviceAccount.create=false and rbac.create=true to avoid binding RBAC to the default service account" }}
+{{- end }}
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "argocd-clusterprofile-controller.fullname" . }}
+  namespace: {{ include "argocd-clusterprofile-controller.namespace" . }}
+  labels:
+    {{- include "argocd-clusterprofile-controller.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "argocd-clusterprofile-controller.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "argocd-clusterprofile-controller.serviceAccountName" . }}
+{{- end }}

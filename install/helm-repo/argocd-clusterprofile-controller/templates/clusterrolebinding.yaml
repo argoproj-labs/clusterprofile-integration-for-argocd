@@ -1,0 +1,16 @@
+{{- if and .Values.rbac.create .Values.controller.clusterScoped }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "argocd-clusterprofile-controller.fullname" . }}
+  labels:
+    {{- include "argocd-clusterprofile-controller.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "argocd-clusterprofile-controller.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "argocd-clusterprofile-controller.serviceAccountName" . }}
+    namespace: {{ include "argocd-clusterprofile-controller.namespace" . }}
+{{- end }}

@@ -1,0 +1,19 @@
+{{- $namespace := include "argocd-clusterprofile-controller.namespace" . }}
+{{- if and .Values.rbac.create (not .Values.controller.clusterScoped) (gt (len .Values.controller.clusterProfileNamespaces) 0) }}
+{{- range $watchNamespace := .Values.controller.clusterProfileNamespaces }}
+{{- if ne $watchNamespace $namespace }}
+{{- fail (printf "rbac.create=true with controller.clusterScoped=false only creates RBAC in namespace %q; set controller.clusterScoped=true or manage RBAC for watched namespace %q" $namespace $watchNamespace) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "argocd-clusterprofile-controller.fullname" . }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "argocd-clusterprofile-controller.labels" . | nindent 4 }}
+rules:
+  {{- include "argocd-clusterprofile-controller.rbacRules" (dict "writeSecrets" true) | nindent 2 }}
+{{- end }}

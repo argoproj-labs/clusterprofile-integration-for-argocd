@@ -1,0 +1,146 @@
+# -- Override the chart name used in `app.kubernetes.io/name`.
+nameOverride: ""
+
+# -- Override the fully-qualified resource name.
+fullnameOverride: ""
+
+# -- Override the Kubernetes namespace used in rendered namespaced resources.
+namespaceOverride: ""
+
+# -- Global values reserved for parent charts.
+global: {}
+
+## @section Image
+image:
+  # -- Container image repository for the controller.
+  repository: ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd
+  # -- Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+  # -- Image pull policy for the controller container.
+  pullPolicy: IfNotPresent
+
+# -- Image pull secrets for the controller pod.
+imagePullSecrets: []
+
+## @section Deployment
+# -- Number of controller replicas.
+replicaCount: 1
+
+controller:
+  # -- Extra command-line arguments appended after the chart-managed arguments.
+  args: []
+  # -- Path to a mounted ClusterProfile providers file.
+  clusterProfileProvidersFile: ""
+  # -- Watch ClusterProfile resources in all namespaces. When rbac.create=true, cluster-scoped RBAC is created automatically.
+  clusterScoped: false
+  # -- Namespaces to watch for ClusterProfile resources. Empty means the release namespace unless clusterScoped is true.
+  clusterProfileNamespaces: []
+  # -- Metrics bind address passed to the controller.
+  metricsAddr: ":8080"
+  # -- Health probe bind address passed to the controller.
+  probeAddr: ":8081"
+  # -- Enable controller-runtime leader election.
+  enableLeaderElection: false
+  # -- Enable dry-run mode.
+  dryRun: false
+  # -- Enable debug logging. Takes precedence over logLevel.
+  debug: false
+  # -- Explicit log format (`json` or `text`). Empty keeps the controller default or Argo CD cmd params value.
+  logFormat: ""
+  # -- Explicit log level (`debug`, `info`, `warn`, `error`). Empty keeps the controller default or Argo CD cmd params value.
+  logLevel: ""
+  argoCDCmdParams:
+    # -- Read optional Argo CD command parameter keys from a ConfigMap.
+    enabled: true
+    # -- ConfigMap name containing Argo CD command parameters.
+    configMapName: argocd-cmd-params-cm
+  # -- Extra environment variables for the controller container.
+  extraEnv: []
+  # -- Extra envFrom entries for the controller container.
+  extraEnvFrom: []
+  # -- Extra volume mounts for the controller container.
+  extraVolumeMounts: []
+  # -- Extra volumes for the controller pod.
+  extraVolumes: []
+
+# -- Extra annotations for the controller pods.
+podAnnotations: {}
+
+# -- Extra labels for the controller pods.
+podLabels: {}
+
+# -- Pod-level security context.
+podSecurityContext: {}
+
+# -- Container-level security context.
+containerSecurityContext:
+  capabilities:
+    drop:
+      - ALL
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Resource requests and limits for the controller container.
+resources: {}
+
+# -- Node selector for the controller pod.
+nodeSelector:
+  kubernetes.io/os: linux
+
+# -- Tolerations for the controller pod.
+tolerations: []
+
+# -- Affinity rules for the controller pod.
+affinity: {}
+
+# -- Topology spread constraints for the controller pod.
+topologySpreadConstraints: []
+
+# -- Priority class name for the controller pod.
+priorityClassName: ""
+
+## @section Service account and RBAC
+serviceAccount:
+  # -- Create a service account for the controller.
+  create: true
+  # -- Service account name. Generated when empty and create is true.
+  name: ""
+  # -- Extra annotations for the service account.
+  annotations: {}
+  # -- Extra labels for the service account.
+  labels: {}
+
+rbac:
+  # -- Create RBAC resources for the controller. Cluster-scoped RBAC is created only when controller.clusterScoped=true.
+  create: true
+
+## @section Networking
+service:
+  metrics:
+    # -- Create a metrics Service.
+    enabled: true
+    # -- Metrics Service type.
+    type: ClusterIP
+    # -- Metrics Service port.
+    port: 8080
+    # -- Extra annotations for the metrics Service.
+    annotations: {}
+
+networkPolicy:
+  # -- Create a NetworkPolicy allowing access to the metrics port.
+  enabled: true
+  ingress:
+    # -- Namespace selector allowed to access the metrics port.
+    namespaceSelector: {}
+
+## @section Tests
+tests:
+  # -- Enable Helm chart tests.
+  enabled: false
+  # -- Test image repository.
+  image: bitnamilegacy/kubectl
+  # -- Test image tag.
+  tag: "1.33.4"

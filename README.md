@@ -91,6 +91,33 @@ To install the standalone controller into your cluster:
 kubectl apply -k artifacts/manifests
 ```
 
+This default install watches `ClusterProfile` resources in the controller's
+namespace. To watch `ClusterProfile` resources in all namespaces, install the
+cluster-scoped overlay instead:
+
+```bash
+kubectl apply -k artifacts/manifests/cluster-scoped
+```
+
+To install with Helm:
+
+```bash
+helm install argocd-clusterprofile-controller \
+  oci://ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd/argocd-clusterprofile-controller \
+  --namespace argocd
+```
+
+The Helm chart also defaults to namespace-local watching. To watch all
+namespaces, set `controller.clusterScoped=true`; the chart will render the
+matching cluster-scoped RBAC automatically when `rbac.create=true`:
+
+```bash
+helm upgrade --install argocd-clusterprofile-controller \
+  oci://ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd/argocd-clusterprofile-controller \
+  --namespace argocd \
+  --set controller.clusterScoped=true
+```
+
 To provide an access providers file to the controller, you should configure the `argocd-clusterprofile-controller` deployment with the `--clusterprofile-provider-file` argument (or `ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTERPROFILE_PROVIDER_FILE` environment variable). This should point to a mounted file that contains the configuration for the access providers.
 
 ### Configuration Parameters
@@ -103,6 +130,7 @@ The controller can be configured via command-line arguments or equivalent enviro
 | --- | --- | --- | --- |
 | `--clusterprofile-provider-file` | `ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTERPROFILE_PROVIDER_FILE` | `""` | Path to the custom access providers file. |
 | `--cluster-profile-namespaces` | `ARGOCD_CLUSTERPROFILE_CONTROLLER_NAMESPACES` | `""` | Comma-separated namespaces to watch for `ClusterProfile`s (defaults to active namespace). |
+| `--cluster-profile-all-namespaces` | `ARGOCD_CLUSTERPROFILE_CONTROLLER_ALL_NAMESPACES` | `false` | Watch `ClusterProfile`s in all namespaces. Mutually exclusive with `--cluster-profile-namespaces`. |
 | `--enable-leader-election` | `ARGOCD_CLUSTERPROFILE_CONTROLLER_ENABLE_LEADER_ELECTION` | `false` | Enables leader election for HA/redundancy. |
 | `--dry-run` | `ARGOCD_CLUSTERPROFILE_CONTROLLER_DRY_RUN` | `false` | Enable dry-run mode. |
 | `--debug` | `ARGOCD_CLUSTERPROFILE_CONTROLLER_DEBUG` | `false` | Print debug logs (takes precedence over log level). |
@@ -114,6 +142,12 @@ The controller can be configured via command-line arguments or equivalent enviro
 To uninstall the controller:
 ```bash
 kubectl delete -k artifacts/manifests
+```
+
+For a cluster-scoped Kustomize install, use:
+
+```bash
+kubectl delete -k artifacts/manifests/cluster-scoped
 ```
 
 ## Local Development & Contributing
@@ -138,6 +172,12 @@ Contributions are welcome!
   ```bash
   make docker-build
   ```
+- **Validate Helm chart**:
+  ```bash
+  make validate-values-schema
+  ```
+
+Release process details are documented in [docs/releasing.md](docs/releasing.md).
 
 ## Community & Governance
 

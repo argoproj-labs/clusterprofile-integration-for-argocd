@@ -1,0 +1,344 @@
+{
+  "$schema": "http://json-schema.org/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "nameOverride": {
+      "type": "string",
+      "description": "Override the chart name used in app.kubernetes.io/name."
+    },
+    "fullnameOverride": {
+      "type": "string",
+      "description": "Override the fully-qualified resource name."
+    },
+    "namespaceOverride": {
+      "type": "string",
+      "description": "Override the Kubernetes namespace used in rendered namespaced resources."
+    },
+    "global": {
+      "type": "object",
+      "description": "Global values reserved for parent charts.",
+      "additionalProperties": true
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "tag", "pullPolicy"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "description": "Container image repository for the controller."
+        },
+        "tag": {
+          "type": "string",
+          "description": "Overrides the image tag whose default is the chart appVersion."
+        },
+        "pullPolicy": {
+          "type": "string",
+          "description": "Image pull policy for the controller container.",
+          "enum": ["Always", "IfNotPresent", "Never"]
+        }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "description": "Image pull secrets for the controller pod.",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "replicaCount": {
+      "type": "integer",
+      "description": "Number of controller replicas.",
+      "minimum": 0
+    },
+    "controller": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "args",
+        "clusterProfileProvidersFile",
+        "clusterScoped",
+        "clusterProfileNamespaces",
+        "metricsAddr",
+        "probeAddr",
+        "enableLeaderElection",
+        "dryRun",
+        "debug",
+        "logFormat",
+        "logLevel",
+        "argoCDCmdParams",
+        "extraEnv",
+        "extraEnvFrom",
+        "extraVolumeMounts",
+        "extraVolumes"
+      ],
+      "properties": {
+        "args": {
+          "type": "array",
+          "description": "Extra command-line arguments appended after the chart-managed arguments.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "clusterProfileProvidersFile": {
+          "type": "string",
+          "description": "Path to a mounted ClusterProfile providers file."
+        },
+        "clusterScoped": {
+          "type": "boolean",
+          "description": "Watch ClusterProfile resources in all namespaces. When rbac.create=true, cluster-scoped RBAC is created automatically."
+        },
+        "clusterProfileNamespaces": {
+          "type": "array",
+          "description": "Namespaces to watch for ClusterProfile resources. Empty means the release namespace unless clusterScoped is true.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "metricsAddr": {
+          "type": "string",
+          "description": "Metrics bind address passed to the controller."
+        },
+        "probeAddr": {
+          "type": "string",
+          "description": "Health probe bind address passed to the controller."
+        },
+        "enableLeaderElection": {
+          "type": "boolean",
+          "description": "Enable controller-runtime leader election."
+        },
+        "dryRun": {
+          "type": "boolean",
+          "description": "Enable dry-run mode."
+        },
+        "debug": {
+          "type": "boolean",
+          "description": "Enable debug logging. Takes precedence over logLevel."
+        },
+        "logFormat": {
+          "type": "string",
+          "description": "Explicit log format."
+        },
+        "logLevel": {
+          "type": "string",
+          "description": "Explicit log level."
+        },
+        "argoCDCmdParams": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "configMapName"],
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Read optional Argo CD command parameter keys from a ConfigMap."
+            },
+            "configMapName": {
+              "type": "string",
+              "description": "ConfigMap name containing Argo CD command parameters."
+            }
+          }
+        },
+        "extraEnv": {
+          "type": "array",
+          "description": "Extra environment variables for the controller container.",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "extraEnvFrom": {
+          "type": "array",
+          "description": "Extra envFrom entries for the controller container.",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "extraVolumeMounts": {
+          "type": "array",
+          "description": "Extra volume mounts for the controller container.",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "extraVolumes": {
+          "type": "array",
+          "description": "Extra volumes for the controller pod.",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    "podAnnotations": {
+      "type": "object",
+      "description": "Extra annotations for the controller pods.",
+      "additionalProperties": true
+    },
+    "podLabels": {
+      "type": "object",
+      "description": "Extra labels for the controller pods.",
+      "additionalProperties": true
+    },
+    "podSecurityContext": {
+      "type": "object",
+      "description": "Pod-level security context.",
+      "additionalProperties": true
+    },
+    "containerSecurityContext": {
+      "type": "object",
+      "description": "Container-level security context.",
+      "additionalProperties": true
+    },
+    "resources": {
+      "type": "object",
+      "description": "Resource requests and limits for the controller container.",
+      "additionalProperties": true
+    },
+    "nodeSelector": {
+      "type": "object",
+      "description": "Node selector for the controller pod.",
+      "additionalProperties": true
+    },
+    "tolerations": {
+      "type": "array",
+      "description": "Tolerations for the controller pod.",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "affinity": {
+      "type": "object",
+      "description": "Affinity rules for the controller pod.",
+      "additionalProperties": true
+    },
+    "topologySpreadConstraints": {
+      "type": "array",
+      "description": "Topology spread constraints for the controller pod.",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "priorityClassName": {
+      "type": "string",
+      "description": "Priority class name for the controller pod."
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["create", "name", "annotations", "labels"],
+      "properties": {
+        "create": {
+          "type": "boolean",
+          "description": "Create a service account for the controller."
+        },
+        "name": {
+          "type": "string",
+          "description": "Service account name. Generated when empty and create is true."
+        },
+        "annotations": {
+          "type": "object",
+          "description": "Extra annotations for the service account.",
+          "additionalProperties": true
+        },
+        "labels": {
+          "type": "object",
+          "description": "Extra labels for the service account.",
+          "additionalProperties": true
+        }
+      }
+    },
+    "rbac": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["create"],
+      "properties": {
+        "create": {
+          "type": "boolean",
+          "description": "Create RBAC resources for the controller. Cluster-scoped RBAC is created only when controller.clusterScoped=true."
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metrics"],
+      "properties": {
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "type", "port", "annotations"],
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Create a metrics Service."
+            },
+            "type": {
+              "type": "string",
+              "description": "Metrics Service type."
+            },
+            "port": {
+              "type": "integer",
+              "description": "Metrics Service port.",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "annotations": {
+              "type": "object",
+              "description": "Extra annotations for the metrics Service.",
+              "additionalProperties": true
+            }
+          }
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "ingress"],
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Create a NetworkPolicy allowing access to the metrics port."
+        },
+        "ingress": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["namespaceSelector"],
+          "properties": {
+            "namespaceSelector": {
+              "type": "object",
+              "description": "Namespace selector allowed to access the metrics port.",
+              "additionalProperties": true
+            }
+          }
+        }
+      }
+    },
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "image", "tag"],
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable Helm chart tests."
+        },
+        "image": {
+          "type": "string",
+          "description": "Test image repository."
+        },
+        "tag": {
+          "type": "string",
+          "description": "Test image tag."
+        }
+      }
+    }
+  }
+}

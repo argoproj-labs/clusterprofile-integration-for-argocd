@@ -20,6 +20,7 @@ import (
 	clientcmdv1 "k8s.io/client-go/tools/clientcmd/api/v1"
 	clusterinventory "sigs.k8s.io/cluster-inventory-api/apis/v1alpha1"
 	"sigs.k8s.io/cluster-inventory-api/pkg/access"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -34,6 +35,8 @@ const (
 	testProviderName     = "secretreader"
 	testProviderCommand  = "/plugins/secretreader/bin/secretreader-plugin"
 	argocdNamespace      = "argocd"
+	teamANamespace       = "team-a"
+	teamBNamespace       = "team-b"
 	environmentLabel     = "environment"
 	productionValue      = "production"
 )
@@ -665,4 +668,59 @@ func TestNewCommandClusterProfileProviderFileFlag(t *testing.T) {
 	require.NotNil(t, providerFileFlag)
 	assert.Equal(t, "/tmp/access.json", providerFileFlag.DefValue)
 	assert.Nil(t, command.Flags().Lookup("cluster-profile-providers-file"))
+}
+
+func TestNewCommandClusterProfileAllNamespacesFlag(t *testing.T) {
+	t.Setenv("ARGOCD_CLUSTERPROFILE_CONTROLLER_ALL_NAMESPACES", "true")
+
+	command := NewCommand()
+	allNamespacesFlag := command.Flags().Lookup("cluster-profile-all-namespaces")
+
+	require.NotNil(t, allNamespacesFlag)
+	assert.Equal(t, "true", allNamespacesFlag.DefValue)
+}
+
+func TestBuildCacheOptions(t *testing.T) {
+	t.Run("defaults ClusterProfiles and Secrets to the controller namespace", func(t *testing.T) {
+		profiles, secrets := cacheNamespaces(t, buildCacheOptions(argocdNamespace, nil, false))
+
+		assert.ElementsMatch(t, []string{argocdNamespace}, profiles)
+		assert.ElementsMatch(t, []string{argocdNamespace}, secrets)
+	})
+
+	t.Run("watches only the requested ClusterProfile namespaces", func(t *testing.T) {
+		options := buildCacheOptions(argocdNamespace, []string{teamANamespace, teamBNamespace}, false)
+		profiles, secrets := cacheNamespaces(t, options)
+
+		assert.ElementsMatch(t, []string{teamANamespace, teamBNamespace}, profiles)
+		assert.ElementsMatch(t, []string{argocdNamespace}, secrets)
+	})
+
+	t.Run("watches ClusterProfiles in all namespaces when explicitly requested", func(t *testing.T) {
+		profiles, secrets := cacheNamespaces(t, buildCacheOptions(argocdNamespace, nil, true))
+
+		assert.Empty(t, profiles)
+		assert.ElementsMatch(t, []string{argocdNamespace}, secrets)
+	})
+}
+
+// cacheNamespaces returns the namespaces the cache options scope ClusterProfiles and Secrets to.
+func cacheNamespaces(t *testing.T, options cache.Options) (profiles, secrets []string) {
+	t.Helper()
+
+	for object, byObject := range options.ByObject {
+		var dst *[]string
+		switch object.(type) {
+		case *clusterinventory.ClusterProfile:
+			dst = &profiles
+		case *corev1.Secret:
+			dst = &secrets
+		default:
+			t.Fatalf("unexpected cached object type %T", object)
+		}
+		for namespace := range byObject.Namespaces {
+			*dst = append(*dst, namespace)
+		}
+	}
+	return profiles, secrets
 }
