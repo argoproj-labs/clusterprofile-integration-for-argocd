@@ -8,7 +8,7 @@ This guide demonstrates how to use Cluster Profiles to connect a spoke cluster t
 ## Prerequisites
 
 - Docker, Kind, Kubectl, Helm
-- A Kubernetes version that supports ImageVolume.
+- A kind default node image using Kubernetes v1.35 or newer. ImageVolume is enabled by default starting in Kubernetes v1.35.
 
 ## 1. Create Hub and Spoke Clusters
 
@@ -16,6 +16,7 @@ Create two `kind` clusters:
 ```bash
 kind create cluster --name hub
 kind create cluster --name spoke
+kubectl --context kind-hub version
 ```
 
 ## 2. Install Argo CD

@@ -12,7 +12,7 @@ ARGOCD_IMAGE_PULL_POLICY="${ARGOCD_IMAGE_PULL_POLICY:-Always}"
 GUESTBOOK_REVISION="${GUESTBOOK_REVISION:-8088f4c0d970abb09e250248cc97e35623447cb5}"
 E2E_IMG="${E2E_IMG:-ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd:latest}"
 E2E_PREFIX="${E2E_PREFIX:-cpia-e2e-$$}"
-KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-}"
+KIND_CREATE_WAIT="${KIND_CREATE_WAIT:-120s}"
 SECRETREADER_IMAGE="${SECRETREADER_IMAGE:-registry.k8s.io/cluster-inventory-api/secretreader:v0.1.3}"
 SECRETREADER_COMMAND="${SECRETREADER_COMMAND:-/plugins/secretreader/bin/secretreader-plugin}"
 HUB_CLUSTER="${HUB_CLUSTER:-${E2E_PREFIX}-hub}"
@@ -42,10 +42,21 @@ require_command() {
 
 create_kind_cluster() {
   local cluster_name="$1"
-  if [ -n "${KIND_NODE_IMAGE}" ]; then
-    kind create cluster --name "${cluster_name}" --image "${KIND_NODE_IMAGE}" --wait 120s
-  else
-    kind create cluster --name "${cluster_name}" --wait 120s
+  kind create cluster --name "${cluster_name}" --wait "${KIND_CREATE_WAIT}"
+}
+
+require_kind_kubernetes_1_35_or_newer() {
+  local cluster_name="$1" version major minor
+  version="$(kubectl --context "kind-${cluster_name}" version -o json | jq -r '.serverVersion.gitVersion')"
+  if [[ ! "${version}" =~ ^v([0-9]+)\.([0-9]+)\. ]]; then
+    echo "unable to parse Kubernetes server version for kind cluster ${cluster_name}: ${version}" >&2
+    exit 1
+  fi
+  major="${BASH_REMATCH[1]}"
+  minor="${BASH_REMATCH[2]}"
+  if (( major < 1 || (major == 1 && minor < 35) )); then
+    echo "kind cluster ${cluster_name} uses Kubernetes ${version}; this e2e requires kind's default Kubernetes version to be v1.35 or newer and does not support node image overrides" >&2
+    exit 1
   fi
 }
 
@@ -194,21 +205,52 @@ verify_argocd_server_cluster_access() {
 
 patch_secretreader_volume() {
   local workload="$1" container="$2"
-  kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" patch "${workload}" --type strategic --patch "
-spec:
-  template:
-    spec:
-      volumes:
-        - name: secretreader-plugin
-          image:
-            reference: ${SECRETREADER_IMAGE}
-            pullPolicy: IfNotPresent
-      containers:
-        - name: ${container}
-          volumeMounts:
-            - name: secretreader-plugin
-              mountPath: /plugins/secretreader
-              readOnly: true"
+  local container_index patch
+  container_index="$(
+    kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" get "${workload}" -o json |
+      jq --arg container "${container}" -r '.spec.template.spec.containers | to_entries[] | select(.value.name == $container) | .key'
+  )"
+  if [ -z "${container_index}" ]; then
+    echo "container ${container} not found in ${workload}" >&2
+    return 1
+  fi
+  patch="$(
+    jq -nc \
+      --arg image "${SECRETREADER_IMAGE}" \
+      --arg mountPath "/spec/template/spec/containers/${container_index}/volumeMounts/-" \
+      '[
+        {
+          "op": "add",
+          "path": "/spec/template/spec/volumes/-",
+          "value": {
+            "name": "secretreader-plugin",
+            "image": {
+              "reference": $image,
+              "pullPolicy": "IfNotPresent"
+            }
+          }
+        },
+        {
+          "op": "add",
+          "path": $mountPath,
+          "value": {
+            "name": "secretreader-plugin",
+            "mountPath": "/plugins/secretreader",
+            "readOnly": true
+          }
+        }
+      ]'
+  )"
+  kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" patch "${workload}" --type=json -p "${patch}"
+}
+
+verify_secretreader_volume() {
+  local workload="$1" container="$2"
+  kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" get "${workload}" -o json |
+    jq -e --arg image "${SECRETREADER_IMAGE}" --arg container "${container}" '
+      any(.spec.template.spec.volumes[]?; .name == "secretreader-plugin" and .image.reference == $image and .image.pullPolicy == "IfNotPresent") and
+      any(.spec.template.spec.containers[]?; .name == $container and any(.volumeMounts[]?; .name == "secretreader-plugin" and .mountPath == "/plugins/secretreader" and .readOnly == true))
+    ' >/dev/null
 }
 
 require_command argocd
@@ -232,12 +274,10 @@ cd "${REPO_ROOT}"
 log "creating kind clusters"
 HUB_CREATED=1
 create_kind_cluster "${HUB_CLUSTER}"
-if ! kubectl --context "kind-${HUB_CLUSTER}" explain pod.spec.volumes.image >/dev/null 2>&1; then
-  echo "kind cluster ${HUB_CLUSTER} does not support Kubernetes ImageVolume" >&2
-  exit 1
-fi
+require_kind_kubernetes_1_35_or_newer "${HUB_CLUSTER}"
 SPOKE_CREATED=1
 create_kind_cluster "${SPOKE_CLUSTER}"
+require_kind_kubernetes_1_35_or_newer "${SPOKE_CLUSTER}"
 
 log "loading controller image ${E2E_IMG}"
 kind load docker-image "${E2E_IMG}" --name "${HUB_CLUSTER}"
@@ -384,6 +424,8 @@ spec:
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" rollout status sts/argocd-application-controller --timeout=300s
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" rollout status deploy/argocd-server --timeout=300s
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" rollout status deploy/argocd-clusterprofile-controller --timeout=300s
+verify_secretreader_volume sts/argocd-application-controller application-controller
+verify_secretreader_volume deploy/argocd-server server
 
 log "creating ClusterProfile"
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" apply -f - <<EOF
@@ -427,7 +469,12 @@ EOF
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" patch clusterprofile "${CP_NAME}" --subresource=status --type=merge \
   -p "${STATUS_PATCH}"
 
-kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" wait --for=jsonpath='{.metadata.labels.environment}'=e2e "secret/${SECRET_NAME}" --timeout=120s
+_cluster_secret_ready() {
+  local environment
+  environment="$(kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" get secret "${SECRET_NAME}" -o jsonpath='{.metadata.labels.environment}' 2>/dev/null || true)"
+  test "${environment}" = "e2e"
+}
+retry_until 60 "ClusterProfile cluster Secret ${SECRET_NAME}" _cluster_secret_ready
 SECRET_JSON="$(kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" get secret "${SECRET_NAME}" -o json)"
 CONFIG="$(printf '%s' "${SECRET_JSON}" | jq -r '.data.config' | base64 -d)"
 
