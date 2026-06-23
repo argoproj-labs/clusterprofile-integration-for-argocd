@@ -84,19 +84,15 @@ func NewCommand() *cobra.Command {
 
 			restConfig.UserAgent = fmt.Sprintf("argocd-clusterprofile-controller/%s (%s)", vers.Version, vers.Platform)
 
-			var watchedNamespace string
-			if len(clusterProfileNamespaces) == 1 {
-				watchedNamespace = (clusterProfileNamespaces)[0]
-			}
-
-			var cacheOpt cache.Options
-			if watchedNamespace != "" {
-				cacheOpt = cache.Options{
-					DefaultNamespaces: map[string]cache.Config{
-						watchedNamespace: {},
-					},
+			// Scope the manager cache to the configured cluster profile namespaces.
+			defaultNamespaces := make(map[string]cache.Config, len(clusterProfileNamespaces))
+			for _, ns := range clusterProfileNamespaces {
+				if ns == "" {
+					continue
 				}
+				defaultNamespaces[ns] = cache.Config{}
 			}
+			cacheOpt := cache.Options{DefaultNamespaces: defaultNamespaces}
 
 			cfg := ctrl.GetConfigOrDie()
 			err = appv1alpha1.SetK8SConfigDefaults(cfg)
