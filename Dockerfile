@@ -2,8 +2,8 @@
 FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
 
 WORKDIR /workspace
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+ARG TARGETOS
+ARG TARGETARCH
 
 COPY go.mod go.mod
 COPY go.sum go.sum
