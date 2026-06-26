@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
+	"slices"
+	"strings"
 
 	"github.com/spf13/cobra"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
@@ -54,7 +57,6 @@ func NewCommand() *cobra.Command {
 			vers := common.GetVersion()
 			namespace, _, err := clientConfig.Namespace()
 			errors.CheckError(err)
-			clusterProfileNamespaces = append(clusterProfileNamespaces, namespace)
 
 			vers.LogStartupInfo(
 				"ArgoCD Cluster Profile Controller",
@@ -84,15 +86,7 @@ func NewCommand() *cobra.Command {
 
 			restConfig.UserAgent = fmt.Sprintf("argocd-clusterprofile-controller/%s (%s)", vers.Version, vers.Platform)
 
-			// Scope the manager cache to the configured cluster profile namespaces.
-			defaultNamespaces := make(map[string]cache.Config, len(clusterProfileNamespaces))
-			for _, ns := range clusterProfileNamespaces {
-				if ns == "" {
-					continue
-				}
-				defaultNamespaces[ns] = cache.Config{}
-			}
-			cacheOpt := cache.Options{DefaultNamespaces: defaultNamespaces}
+			cacheOpt := buildCacheOptions(namespace, clusterProfileNamespaces)
 
 			cfg := ctrl.GetConfigOrDie()
 			err = appv1alpha1.SetK8SConfigDefaults(cfg)
@@ -160,7 +154,8 @@ func NewCommand() *cobra.Command {
 		&clusterProfileNamespaces,
 		"cluster-profile-namespaces",
 		env.StringsFromEnv("ARGOCD_CLUSTERPROFILE_CONTROLLER_NAMESPACES", []string{}, ","),
-		"Argo CD cluster profile namespaces",
+		"Comma-separated namespaces to watch for ClusterProfiles. "+
+			"Use '*' to watch all namespaces (defaults to the active namespace).",
 	)
 	command.Flags().BoolVar(
 		&debugLog,
@@ -194,6 +189,67 @@ func NewCommand() *cobra.Command {
 	)
 
 	return &command
+}
+
+// allNamespacesSentinel mirrors Argo CD's `--application-namespaces='*'`: when present in the
+// cluster-profile namespaces list, the controller watches ClusterProfiles in all namespaces.
+const allNamespacesSentinel = "*"
+
+func buildCacheOptions(
+	controllerNamespace string,
+	clusterProfileNamespaces []string,
+) cache.Options {
+	clusterProfileNamespaceConfigs := map[string]cache.Config{}
+	if !watchesAllNamespaces(clusterProfileNamespaces) {
+		namespaces := normalizeNamespaces(clusterProfileNamespaces)
+		if len(namespaces) == 0 {
+			namespaces = []string{controllerNamespace}
+		}
+		clusterProfileNamespaceConfigs = namespaceCacheConfigs(namespaces)
+	}
+
+	return cache.Options{
+		ByObject: map[ctrlclient.Object]cache.ByObject{
+			&clusterv1alpha1.ClusterProfile{}: {
+				Namespaces: clusterProfileNamespaceConfigs,
+			},
+			&corev1.Secret{}: {
+				Namespaces: namespaceCacheConfigs([]string{controllerNamespace}),
+			},
+		},
+	}
+}
+
+// watchesAllNamespaces reports whether the configured cluster-profile namespaces request a
+// cluster-wide watch via the allNamespacesSentinel ("*"). Empty entries are dropped first so a
+// stray "" (e.g. from a trailing comma in the env var) never silently expands the watch scope.
+func watchesAllNamespaces(namespaces []string) bool {
+	return slices.Contains(normalizeNamespaces(namespaces), allNamespacesSentinel)
+}
+
+func namespaceCacheConfigs(namespaces []string) map[string]cache.Config {
+	configs := make(map[string]cache.Config, len(namespaces))
+	for _, namespace := range normalizeNamespaces(namespaces) {
+		configs[namespace] = cache.Config{}
+	}
+	return configs
+}
+
+func normalizeNamespaces(namespaces []string) []string {
+	normalized := make([]string, 0, len(namespaces))
+	seen := make(map[string]struct{}, len(namespaces))
+	for _, namespace := range namespaces {
+		namespace = strings.TrimSpace(namespace)
+		if namespace == "" {
+			continue
+		}
+		if _, ok := seen[namespace]; ok {
+			continue
+		}
+		seen[namespace] = struct{}{}
+		normalized = append(normalized, namespace)
+	}
+	return normalized
 }
 
 func main() {
