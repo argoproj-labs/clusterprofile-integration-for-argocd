@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -20,6 +23,7 @@ import (
 	clientcmdv1 "k8s.io/client-go/tools/clientcmd/api/v1"
 	clusterinventory "sigs.k8s.io/cluster-inventory-api/apis/v1alpha1"
 	"sigs.k8s.io/cluster-inventory-api/pkg/access"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -665,4 +669,93 @@ func TestNewCommandClusterProfileProviderFileFlag(t *testing.T) {
 	require.NotNil(t, providerFileFlag)
 	assert.Equal(t, "/tmp/access.json", providerFileFlag.DefValue)
 	assert.Nil(t, command.Flags().Lookup("cluster-profile-providers-file"))
+}
+
+func TestNewCommandClusterProfileNamespacesAllNamespacesSentinel(t *testing.T) {
+	t.Setenv("ARGOCD_CLUSTERPROFILE_CONTROLLER_NAMESPACES", "*")
+
+	command := NewCommand()
+
+	namespacesFlag := command.Flags().Lookup("cluster-profile-namespaces")
+	require.NotNil(t, namespacesFlag)
+	assert.Equal(t, "[*]", namespacesFlag.DefValue)
+
+	// The dedicated boolean flag has been removed in favour of the "*" sentinel.
+	assert.Nil(t, command.Flags().Lookup("cluster-profile-all-namespaces"))
+}
+
+func TestBuildCacheOptions(t *testing.T) {
+	t.Run("defaults ClusterProfiles and Secrets to the controller namespace", func(t *testing.T) {
+		options := buildCacheOptions(argocdNamespace, nil)
+
+		assertCacheNamespaces(t, options, &clusterinventory.ClusterProfile{}, []string{argocdNamespace})
+		assertCacheNamespaces(t, options, &corev1.Secret{}, []string{argocdNamespace})
+	})
+
+	t.Run("defaults ClusterProfiles to the controller namespace when namespace entries are blank", func(t *testing.T) {
+		options := buildCacheOptions(argocdNamespace, []string{"", " ", "\t"})
+
+		assertCacheNamespaces(t, options, &clusterinventory.ClusterProfile{}, []string{argocdNamespace})
+		assertCacheNamespaces(t, options, &corev1.Secret{}, []string{argocdNamespace})
+	})
+
+	t.Run("watches only the requested ClusterProfile namespaces", func(t *testing.T) {
+		const teamANamespace = "team-a"
+
+		options := buildCacheOptions(
+			argocdNamespace,
+			[]string{teamANamespace, " team-b ", teamANamespace, ""},
+		)
+
+		assertCacheNamespaces(t, options, &clusterinventory.ClusterProfile{}, []string{teamANamespace, "team-b"})
+		assertCacheNamespaces(t, options, &corev1.Secret{}, []string{argocdNamespace})
+	})
+
+	t.Run("watches ClusterProfiles in all namespaces when the wildcard is requested", func(t *testing.T) {
+		options := buildCacheOptions(argocdNamespace, []string{"*"})
+
+		clusterProfileNamespaces := cacheNamespacesFor(t, options, &clusterinventory.ClusterProfile{})
+		require.NotNil(t, clusterProfileNamespaces)
+		assert.Empty(t, clusterProfileNamespaces)
+		assertCacheNamespaces(t, options, &corev1.Secret{}, []string{argocdNamespace})
+	})
+
+	t.Run("the wildcard takes precedence over explicit namespaces", func(t *testing.T) {
+		options := buildCacheOptions(argocdNamespace, []string{"team-a", "*"})
+
+		clusterProfileNamespaces := cacheNamespacesFor(t, options, &clusterinventory.ClusterProfile{})
+		require.NotNil(t, clusterProfileNamespaces)
+		assert.Empty(t, clusterProfileNamespaces)
+		assertCacheNamespaces(t, options, &corev1.Secret{}, []string{argocdNamespace})
+	})
+}
+
+func assertCacheNamespaces(
+	t *testing.T,
+	options cache.Options,
+	object client.Object,
+	expectedNamespaces []string,
+) {
+	t.Helper()
+
+	namespaces := cacheNamespacesFor(t, options, object)
+	require.NotNil(t, namespaces)
+	assert.ElementsMatch(t, expectedNamespaces, slices.Collect(maps.Keys(namespaces)))
+}
+
+func cacheNamespacesFor(
+	t *testing.T,
+	options cache.Options,
+	object client.Object,
+) map[string]cache.Config {
+	t.Helper()
+
+	objectType := reflect.TypeOf(object)
+	for cachedObject, byObject := range options.ByObject {
+		if reflect.TypeOf(cachedObject) == objectType {
+			return byObject.Namespaces
+		}
+	}
+	t.Fatalf("cache options do not include object type %T", object)
+	return nil
 }

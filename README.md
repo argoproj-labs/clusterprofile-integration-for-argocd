@@ -102,7 +102,7 @@ The controller can be configured via command-line arguments or equivalent enviro
 | Argument | Environment Variable | Default | Description |
 | --- | --- | --- | --- |
 | `--clusterprofile-provider-file` | `ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTERPROFILE_PROVIDER_FILE` | `""` | Path to the custom access providers file. |
-| `--cluster-profile-namespaces` | `ARGOCD_CLUSTERPROFILE_CONTROLLER_NAMESPACES` | `""` | Comma-separated namespaces to watch for `ClusterProfile`s (defaults to active namespace). |
+| `--cluster-profile-namespaces` | `ARGOCD_CLUSTERPROFILE_CONTROLLER_NAMESPACES` | `""` | Comma-separated namespaces to watch for `ClusterProfile`s (defaults to active namespace). Use `'*'` to watch all namespaces (quote it to avoid shell globbing). |
 | `--enable-leader-election` | `ARGOCD_CLUSTERPROFILE_CONTROLLER_ENABLE_LEADER_ELECTION` | `false` | Enables leader election for HA/redundancy. |
 | `--dry-run` | `ARGOCD_CLUSTERPROFILE_CONTROLLER_DRY_RUN` | `false` | Enable dry-run mode. |
 | `--debug` | `ARGOCD_CLUSTERPROFILE_CONTROLLER_DEBUG` | `false` | Print debug logs (takes precedence over log level). |
