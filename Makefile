@@ -6,6 +6,14 @@ IMAGE_MULTIARCH_PLATFORMS?=linux/amd64,linux/arm64
 IMAGE_TAG?=latest
 IMG ?= $(IMAGE_REPOSITORY)/$(IMAGE_NAME):$(IMAGE_TAG)
 
+# Helm tooling settings
+HELM_CHART_DIRS := $(shell find charts -mindepth 1 -maxdepth 1 -type d -exec test -f '{}/Chart.yaml' ';' -print | sort)
+HELM_VALUES_SCHEMA_CHART := charts/argocd-clusterprofile-controller
+HELM_SCHEMA_VERSION ?= 2.5.0
+HELM_SCHEMA := go run github.com/losisin/helm-values-schema-json/v2@v$(HELM_SCHEMA_VERSION)
+HELM_DOCS_VERSION ?= 1.14.2
+HELM_DOCS := go run github.com/norwoodj/helm-docs/cmd/helm-docs@v$(HELM_DOCS_VERSION)
+
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
 GOBIN=$(shell go env GOPATH)/bin
@@ -78,3 +86,27 @@ image-multiarch: ## Build and push multi-arch container image.
 .PHONY: push-image
 push-image: ## Push single-arch container image.
 	docker push $(IMG)
+
+##@ Helm
+
+.PHONY: helm-lint
+helm-lint: ## Lint Helm charts.
+	helm lint $(HELM_CHART_DIRS)
+
+.PHONY: validate-values-schema
+validate-values-schema: ## Verify generated Helm values schema is up to date.
+	@set -e; \
+	tmp=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	cd $(HELM_VALUES_SCHEMA_CHART); \
+	$(HELM_SCHEMA) lint --strict; \
+	$(HELM_SCHEMA) --output "$$tmp/values.schema.json"; \
+	diff -u values.schema.json "$$tmp/values.schema.json"
+
+.PHONY: generate-values-schema
+generate-values-schema: ## Generate Helm values schema.
+	cd $(HELM_VALUES_SCHEMA_CHART) && $(HELM_SCHEMA)
+
+.PHONY: generate-helm-docs
+generate-helm-docs: ## Generate Helm chart README files.
+	$(HELM_DOCS) --chart-search-root=charts

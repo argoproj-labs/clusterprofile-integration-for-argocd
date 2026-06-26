@@ -1,0 +1,22 @@
+{{- if .Values.service.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "argocd-clusterprofile-controller.controller.fullname" . }}
+  namespace: {{ include "argocd-clusterprofile-controller.namespace" . }}
+  labels:
+    {{- include "argocd-clusterprofile-controller.labels" . | nindent 4 }}
+  {{- with .Values.service.metrics.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.metrics.type }}
+  ports:
+    - name: metrics
+      port: {{ .Values.service.metrics.port }}
+      protocol: TCP
+      targetPort: metrics
+  selector:
+    {{- include "argocd-clusterprofile-controller.selectorLabels" . | nindent 4 }}
+{{- end }}

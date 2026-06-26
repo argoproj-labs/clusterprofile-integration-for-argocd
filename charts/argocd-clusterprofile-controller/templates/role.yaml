@@ -1,0 +1,32 @@
+{{- if .Values.rbac.create }}
+{{- $releaseNamespace := include "argocd-clusterprofile-controller.namespace" . }}
+{{- $namespaces := include "argocd-clusterprofile-controller.clusterProfileNamespaces" . | fromJsonArray }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "argocd-clusterprofile-controller.controller.fullname" . }}
+  namespace: {{ include "argocd-clusterprofile-controller.namespace" . }}
+  labels:
+    {{- include "argocd-clusterprofile-controller.labels" . | nindent 4 }}
+rules:
+  {{- include "argocd-clusterprofile-controller.localRules" . | nindent 2 }}
+  {{- if eq (include "argocd-clusterprofile-controller.watchesReleaseNamespace" .) "true" }}
+  {{- include "argocd-clusterprofile-controller.clusterProfileRules" . | nindent 2 }}
+  {{- end }}
+{{- if and $namespaces (ne (include "argocd-clusterprofile-controller.watchesAllClusterProfiles" .) "true") }}
+{{- range $namespace := $namespaces }}
+{{- if ne $namespace $releaseNamespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "argocd-clusterprofile-controller.controller.fullname" $ }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "argocd-clusterprofile-controller.labels" $ | nindent 4 }}
+rules:
+  {{- include "argocd-clusterprofile-controller.clusterProfileRules" $ | nindent 2 }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

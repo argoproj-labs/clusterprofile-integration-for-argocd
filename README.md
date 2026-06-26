@@ -39,7 +39,7 @@ status:
 
 The controller will also update the `ClusterProfile`'s status to include the `Secret`'s name and namespace.
 
-These `ClusterProfile` resources may be synced automatically by a cluster manager or created manually. The `ClusterProfile` CRD from the [Cluster Inventory API](https://github.com/kubernetes-sigs/cluster-inventory-api) is automatically installed when you deploy the standalone controller.
+These `ClusterProfile` resources may be synced automatically by a cluster manager or created manually. The `ClusterProfile` CRD from the [Cluster Inventory API](https://github.com/kubernetes-sigs/cluster-inventory-api) must exist in the cluster before you deploy the controller with Helm.
 
 When running as a standalone controller, it watches for `ClusterProfile` objects and generates `Secret`s for Argo CD. The generated `Secret`s are labeled with `argocd.argoproj.io/secret-type: cluster` and `argocd.argoproj.io/cluster-profile-origin`, and also include labels from the source `ClusterProfile`.
 
@@ -91,6 +91,18 @@ To install the standalone controller into your cluster:
 kubectl apply -k artifacts/manifests
 ```
 
+To install a released Helm chart from GHCR:
+```bash
+helm install argocd-clusterprofile-controller \
+  oci://ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd/argocd-clusterprofile-controller \
+  --version 0.1.0 \
+  --namespace argocd
+```
+
+The Helm chart does not install the `clusterprofiles.multicluster.x-k8s.io` CRD.
+Install the Cluster Inventory API CRD separately, or use a cluster where another
+component already owns it.
+
 To provide an access providers file to the controller, you should configure the `argocd-clusterprofile-controller` deployment with the `--clusterprofile-provider-file` argument (or `ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTERPROFILE_PROVIDER_FILE` environment variable). This should point to a mounted file that contains the configuration for the access providers.
 
 ### Configuration Parameters
@@ -138,6 +150,14 @@ Contributions are welcome!
   ```bash
   make docker-build
   ```
+- **Validate Helm chart**:
+  ```bash
+  make helm-lint
+  make validate-values-schema
+  make generate-helm-docs
+  ```
+  See the [Helm chart development guide](docs/developer-guide/helm-chart-development.md)
+  for chart versioning and generation details.
 
 ## Community & Governance
 

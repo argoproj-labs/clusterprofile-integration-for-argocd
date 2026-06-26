@@ -1,0 +1,189 @@
+# @schema maxLength:63; pattern:^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+# -- Provide a name in place of `argocd`.
+nameOverride: argocd
+
+# @schema maxLength:63; pattern:^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+# -- String to fully override the base fully-qualified resource name.
+fullnameOverride: ""
+
+# @schema maxLength:63; pattern:^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+# -- Override the Kubernetes namespace used in rendered namespaced resources.
+namespaceOverride: ""
+
+# -- Global values reserved for parent charts.
+global: {}
+
+## @section Image
+# @schema additionalProperties:false
+image:
+  # @schema required; minLength:1
+  # -- Container image repository for the controller.
+  repository: ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd
+  # @schema required; maxLength:128; pattern:^$|^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$
+  # -- Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+  # @schema required; enum:[Always, IfNotPresent, Never]
+  # -- Image pull policy for the controller container.
+  pullPolicy: IfNotPresent
+
+# @schema allOf:[{type: array, items: {type: object, required: [name], additionalProperties: false, properties: {name: {type: string, minLength: 1, maxLength: 253, pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"}}}}]
+# -- Image pull secrets for the controller pod.
+imagePullSecrets: []
+
+## @section Deployment
+# @schema minimum:0
+# -- Number of controller replicas.
+replicaCount: 1
+
+# @schema additionalProperties:false
+controller:
+  # @schema required; minLength:1; maxLength:63; pattern:^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+  # -- Controller name string used as the component name and appended to the base fullname.
+  name: clusterprofile-controller
+  # @schema required; item:string
+  # -- Extra command-line arguments appended after the chart-managed arguments.
+  args: []
+  # @schema required
+  # -- Path to a mounted ClusterProfile providers file.
+  clusterProfileProvidersFile: ""
+  # @schema required; uniqueItems:true; oneOf:[{type: array, items: {type: string, maxLength: 63, pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"}}, {type: array, minItems: 1, maxItems: 1, items: {type: string, enum: ["*"]}}]
+  # -- Namespaces to watch for ClusterProfile resources. Empty means the release namespace. Use `*` alone to watch all namespaces. When `rbac.create` is true, matching ClusterProfile RBAC is generated.
+  clusterProfileNamespaces: []
+  # @schema required; minimum:1; maximum:65535
+  # -- Metrics bind port passed to the controller.
+  metricsPort: 8080
+  # @schema required; minimum:1; maximum:65535
+  # -- Health probe container port.
+  probePort: 8081
+  # @schema required
+  # -- Enable controller-runtime leader election.
+  enableLeaderElection: false
+  # @schema required
+  # -- Enable dry-run mode.
+  dryRun: false
+  # @schema required
+  # -- Enable debug logging. Takes precedence over logLevel.
+  debug: false
+  # @schema required; enum:["", json, text]
+  # -- Explicit log format (`json` or `text`). Empty keeps the controller default or Argo CD cmd params value.
+  logFormat: ""
+  # @schema required; enum:["", debug, info, warn, error]
+  # -- Explicit log level (`debug`, `info`, `warn`, `error`). Empty keeps the controller default or Argo CD cmd params value.
+  logLevel: ""
+  # @schema required; additionalProperties:false
+  argoCDCmdParams:
+    # @schema required
+    # -- Read optional Argo CD command parameter keys from a ConfigMap.
+    enabled: true
+    # @schema required; minLength:1; maxLength:63; pattern:^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+    # -- ConfigMap name containing Argo CD command parameters.
+    configMapName: argocd-cmd-params-cm
+  # @schema required; item:object
+  # -- Extra environment variables for the controller container.
+  extraEnv: []
+  # @schema required; item:object
+  # -- Extra envFrom entries for the controller container.
+  extraEnvFrom: []
+  # @schema required; item:object
+  # -- Extra volume mounts for the controller container.
+  extraVolumeMounts: []
+  # @schema required; item:object
+  # -- Extra volumes for the controller pod.
+  extraVolumes: []
+
+# @schema additionalProperties:{"type":"string"}
+# -- Extra annotations for the controller pods.
+podAnnotations: {}
+
+# @schema additionalProperties:{"type":"string"}
+# -- Extra labels for the controller pods.
+podLabels: {}
+
+# -- Pod-level security context.
+podSecurityContext: {}
+
+# @schema skipProperties:true
+# -- Container-level security context.
+containerSecurityContext:
+  capabilities:
+    drop:
+      - ALL
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Resource requests and limits for the controller container.
+resources: {}
+
+# @schema skipProperties:true; additionalProperties:{"type":"string"}
+# -- Node selector for the controller pod.
+nodeSelector:
+  kubernetes.io/os: linux
+
+# @schema item:object
+# -- Tolerations for the controller pod.
+tolerations: []
+
+# -- Affinity rules for the controller pod.
+affinity: {}
+
+# @schema item:object
+# -- Topology spread constraints for the controller pod.
+topologySpreadConstraints: []
+
+# @schema maxLength:253; pattern:^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+# -- Priority class name for the controller pod.
+priorityClassName: ""
+
+## @section Service account and RBAC
+# @schema additionalProperties:false
+serviceAccount:
+  # @schema required
+  # -- Create a service account for the controller.
+  create: true
+  # @schema required; minLength:1; maxLength:63; pattern:^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+  # -- Controller service account name.
+  name: argocd-clusterprofile-controller
+  # @schema required; additionalProperties:{"type":"string"}
+  # -- Extra annotations for the service account.
+  annotations: {}
+  # @schema required; additionalProperties:{"type":"string"}
+  # -- Extra labels for the service account.
+  labels: {}
+
+# @schema additionalProperties:false
+rbac:
+  # @schema required
+  # -- Create namespaced RBAC resources for the controller.
+  create: true
+
+## @section Networking
+# @schema additionalProperties:false
+service:
+  # @schema required; additionalProperties:false
+  metrics:
+    # @schema required
+    # -- Create a metrics Service.
+    enabled: true
+    # @schema required; enum:[ClusterIP, NodePort, LoadBalancer]
+    # -- Metrics Service type.
+    type: ClusterIP
+    # @schema required; minimum:1; maximum:65535
+    # -- Metrics Service port.
+    port: 8080
+    # @schema required; additionalProperties:{"type":"string"}
+    # -- Extra annotations for the metrics Service.
+    annotations: {}
+
+# @schema additionalProperties:false
+networkPolicy:
+  # @schema required
+  # -- Create a NetworkPolicy allowing access to the metrics port.
+  enabled: false
+  # @schema required; additionalProperties:false
+  ingress:
+    # @schema required
+    # -- Namespace selector allowed to access the metrics port.
+    namespaceSelector: {}
