@@ -1,4 +1,4 @@
-name: Publish release
+name: Build and publish release artifacts
 on:
   push:
     tags:
@@ -7,14 +7,20 @@ on:
 permissions:
   contents: read
 
+env:
+  HELM_VERSION: v3.18.3
+
 jobs:
   setup-variables:
     name: Setup variables for release
-    if: github.repository == 'argoproj-labs/clusterprofile-integration-for-argocd'
     runs-on: ubuntu-22.04
     outputs:
-      is_latest_release: ${{ steps.var.outputs.is_latest_release }}
+      chart_registry: ${{ steps.var.outputs.chart_registry }}
       image_name: ${{ steps.var.outputs.image_name }}
+      image_tags: ${{ steps.var.outputs.image_tags }}
+      is_latest_release: ${{ steps.var.outputs.is_latest_release }}
+      release_tag: ${{ steps.var.outputs.release_tag }}
+      release_version: ${{ steps.var.outputs.release_version }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -25,26 +31,48 @@ jobs:
       - name: Setup variables
         id: var
         run: |
-          set -xue
-          git fetch --prune --tags --force
+          RELEASE_TAG="${GITHUB_REF_NAME}"
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release tag must look like v0.1.0 or v0.1.0-rc.1, but got ${RELEASE_TAG}."
+            exit 1
+          fi
 
+          RELEASE_VERSION="${RELEASE_TAG#v}"
+          IMAGE_NAME="ghcr.io/${GITHUB_REPOSITORY}"
+          CHART_REGISTRY="oci://ghcr.io/${GITHUB_REPOSITORY}"
+
+          git fetch --prune --tags --force
           LATEST_RELEASE_TAG=$(git tag --list 'v*' --sort=version:refname | tail -n 1)
           IS_LATEST_RELEASE=false
-          if [[ "$LATEST_RELEASE_TAG" == "${GITHUB_REF_NAME}" ]]; then
+          if [[ "${LATEST_RELEASE_TAG}" == "${RELEASE_TAG}" ]]; then
             IS_LATEST_RELEASE=true
           fi
-          echo "is_latest_release=$IS_LATEST_RELEASE" >> "$GITHUB_OUTPUT"
-          echo "image_name=ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd" >> "$GITHUB_OUTPUT"
+
+          echo "chart_registry=${CHART_REGISTRY}" >> "${GITHUB_OUTPUT}"
+          echo "image_name=${IMAGE_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "is_latest_release=${IS_LATEST_RELEASE}" >> "${GITHUB_OUTPUT}"
+          echo "release_tag=${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "release_version=${RELEASE_VERSION}" >> "${GITHUB_OUTPUT}"
+
+          {
+            echo "image_tags<<EOF"
+            echo "${IMAGE_NAME}:${RELEASE_TAG}"
+            echo "${IMAGE_NAME}:${RELEASE_VERSION}"
+            if [[ "${IS_LATEST_RELEASE}" == "true" ]]; then
+              echo "${IMAGE_NAME}:latest"
+            fi
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
 
   container-image:
-    name: Build and push release container image
+    name: Build, push, and sign release container image
     needs:
       - setup-variables
     permissions:
       contents: read
+      id-token: write
       packages: write
     runs-on: ubuntu-22.04
-    if: github.repository == 'argoproj-labs/clusterprofile-integration-for-argocd'
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -66,11 +94,100 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push release image
+        id: build-and-push
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ${{ needs.setup-variables.outputs.image_name }}:${{ github.ref_name }}
-            ${{ needs.setup-variables.outputs.is_latest_release == 'true' && format('{0}:latest', needs.setup-variables.outputs.image_name) || '' }}
+          tags: ${{ needs.setup-variables.outputs.image_tags }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign release image
+        env:
+          IMAGE_DIGEST: ${{ steps.build-and-push.outputs.digest }}
+          IMAGE_NAME: ${{ needs.setup-variables.outputs.image_name }}
+        run: |
+          cosign sign --yes "${IMAGE_NAME}@${IMAGE_DIGEST}"
+
+  helm-chart:
+    name: Package, push, and sign release Helm chart
+    needs:
+      - setup-variables
+      - container-image
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Login to ghcr.io for Helm
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "${GITHUB_TOKEN}" | helm registry login ghcr.io \
+            --username "${GITHUB_ACTOR}" \
+            --password-stdin
+
+      - name: Login to ghcr.io for cosign
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package Helm chart
+        env:
+          IMAGE_REPOSITORY: ${{ needs.setup-variables.outputs.image_name }}
+          RELEASE_VERSION: ${{ needs.setup-variables.outputs.release_version }}
+        run: |
+          yq -i '.image.repository = strenv(IMAGE_REPOSITORY)' \
+            charts/argocd-clusterprofile-controller/values.yaml
+          mkdir -p "${RUNNER_TEMP}/charts"
+          helm package charts/argocd-clusterprofile-controller \
+            --version "${RELEASE_VERSION}" \
+            --app-version "${RELEASE_VERSION}" \
+            --destination "${RUNNER_TEMP}/charts"
+
+      - name: Push Helm chart
+        id: push-chart
+        env:
+          CHART_REGISTRY: ${{ needs.setup-variables.outputs.chart_registry }}
+          RELEASE_VERSION: ${{ needs.setup-variables.outputs.release_version }}
+        run: |
+          chart_package="${RUNNER_TEMP}/charts/argocd-clusterprofile-controller-${RELEASE_VERSION}.tgz"
+          push_output=$(helm push "${chart_package}" "${CHART_REGISTRY}" 2>&1)
+
+          echo "${push_output}"
+
+          digest=$(awk '/Digest:/ {print $2}' <<< "${push_output}" | tail -n 1)
+          if [[ -z "${digest}" ]]; then
+            echo "::error::Could not determine Helm chart digest from helm push output."
+            exit 1
+          fi
+
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Sign Helm chart
+        env:
+          CHART_DIGEST: ${{ steps.push-chart.outputs.digest }}
+          CHART_REGISTRY: ${{ needs.setup-variables.outputs.chart_registry }}
+        run: |
+          chart_repository="${CHART_REGISTRY#oci://}/argocd-clusterprofile-controller"
+          cosign sign --yes "${chart_repository}@${CHART_DIGEST}"

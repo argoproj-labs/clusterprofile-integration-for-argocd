@@ -1,0 +1,19 @@
+{{ template "chart.header" . }}
+{{ template "chart.deprecationWarning" . }}
+
+{{ template "chart.description" . }}
+
+Source code can be found here:
+
+{{ template "chart.sourcesList" . }}
+
+## Release versions
+
+The source chart uses placeholder `version` and `appVersion` values. Published
+chart artifacts are stamped from the Git tag by the release workflow. For local
+installs from this checkout, set an explicit image tag such as `main` or a
+locally built tag.
+
+{{ template "chart.requirementsSection" . }}
+
+{{ template "chart.valuesSection" . }}{{ "\n" -}}
