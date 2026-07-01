@@ -37,7 +37,7 @@ status:
       server: https://my-cluster.example.com
 ```
 
-The controller will also update the `ClusterProfile`'s status to include the `Secret`'s name and namespace.
+The controller uses `status.accessProviders` to build the corresponding Argo CD `Secret`.
 
 These `ClusterProfile` resources may be synced automatically by a cluster manager or created manually. The `ClusterProfile` CRD from the [Cluster Inventory API](https://github.com/kubernetes-sigs/cluster-inventory-api) is automatically installed when you deploy the standalone controller.
 
