@@ -423,11 +423,7 @@ rules:
   - multicluster.x-k8s.io
   resources:
   - clusterprofiles
-  - clusterprofiles/status
-  - clusterprofiles/finalizers
   verbs:
-  - create
-  - delete
   - get
   - list
   - patch
@@ -498,11 +494,7 @@ rules:
   - multicluster.x-k8s.io
   resources:
   - clusterprofiles
-  - clusterprofiles/status
-  - clusterprofiles/finalizers
   verbs:
-  - create
-  - delete
   - get
   - list
   - patch
