@@ -191,17 +191,17 @@ func NewCommand() *cobra.Command {
 	return &command
 }
 
-// allNamespacesSentinel mirrors Argo CD's `--application-namespaces='*'`: when present in the
-// cluster-profile namespaces list, the controller watches ClusterProfiles in all namespaces.
+// allNamespacesSentinel ("*") mirrors Argo CD's --application-namespaces and requests a cluster-wide watch.
 const allNamespacesSentinel = "*"
 
 func buildCacheOptions(
 	controllerNamespace string,
 	clusterProfileNamespaces []string,
 ) cache.Options {
+	namespaces := normalizeNamespaces(clusterProfileNamespaces)
+
 	clusterProfileNamespaceConfigs := map[string]cache.Config{}
-	if !watchesAllNamespaces(clusterProfileNamespaces) {
-		namespaces := normalizeNamespaces(clusterProfileNamespaces)
+	if !slices.Contains(namespaces, allNamespacesSentinel) {
 		if len(namespaces) == 0 {
 			namespaces = []string{controllerNamespace}
 		}
@@ -220,33 +220,23 @@ func buildCacheOptions(
 	}
 }
 
-// watchesAllNamespaces reports whether the configured cluster-profile namespaces request a
-// cluster-wide watch via the allNamespacesSentinel ("*"). Empty entries are dropped first so a
-// stray "" (e.g. from a trailing comma in the env var) never silently expands the watch scope.
-func watchesAllNamespaces(namespaces []string) bool {
-	return slices.Contains(normalizeNamespaces(namespaces), allNamespacesSentinel)
-}
-
 func namespaceCacheConfigs(namespaces []string) map[string]cache.Config {
 	configs := make(map[string]cache.Config, len(namespaces))
-	for _, namespace := range normalizeNamespaces(namespaces) {
+	for _, namespace := range namespaces {
 		configs[namespace] = cache.Config{}
 	}
 	return configs
 }
 
+// normalizeNamespaces trims surrounding whitespace and drops blank entries (e.g. from a trailing
+// comma in the env var) so a stray "" never silently expands the watch scope to all namespaces.
 func normalizeNamespaces(namespaces []string) []string {
 	normalized := make([]string, 0, len(namespaces))
-	seen := make(map[string]struct{}, len(namespaces))
 	for _, namespace := range namespaces {
 		namespace = strings.TrimSpace(namespace)
 		if namespace == "" {
 			continue
 		}
-		if _, ok := seen[namespace]; ok {
-			continue
-		}
-		seen[namespace] = struct{}{}
 		normalized = append(normalized, namespace)
 	}
 	return normalized
