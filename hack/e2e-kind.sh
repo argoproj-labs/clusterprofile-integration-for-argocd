@@ -12,6 +12,7 @@ ARGOCD_IMAGE_PULL_POLICY="${ARGOCD_IMAGE_PULL_POLICY:-Always}"
 GUESTBOOK_REVISION="${GUESTBOOK_REVISION:-8088f4c0d970abb09e250248cc97e35623447cb5}"
 E2E_IMG="${E2E_IMG:-ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd:latest}"
 E2E_PREFIX="${E2E_PREFIX:-cpia-e2e-$$}"
+E2E_INSTALL_METHOD="${E2E_INSTALL_METHOD:-helm}"
 KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-}"
 SECRETREADER_IMAGE="${SECRETREADER_IMAGE:-registry.k8s.io/cluster-inventory-api/secretreader:v0.1.3}"
 SECRETREADER_COMMAND="${SECRETREADER_COMMAND:-/plugins/secretreader/bin/secretreader-plugin}"
@@ -218,6 +219,14 @@ require_command jq
 require_command kind
 require_command kubectl
 
+case "${E2E_INSTALL_METHOD}" in
+  kustomize|helm) ;;
+  *)
+    echo "unsupported E2E_INSTALL_METHOD: ${E2E_INSTALL_METHOD} (expected kustomize or helm)" >&2
+    exit 1
+    ;;
+esac
+
 if kind get clusters | grep -qx "${HUB_CLUSTER}"; then
   echo "kind cluster already exists: ${HUB_CLUSTER}" >&2
   exit 1
@@ -242,7 +251,7 @@ create_kind_cluster "${SPOKE_CLUSTER}"
 log "loading controller image ${E2E_IMG}"
 kind load docker-image "${E2E_IMG}" --name "${HUB_CLUSTER}"
 
-log "installing Argo CD chart ${ARGOCD_CHART_VERSION} and ClusterProfile controller"
+log "installing Argo CD chart ${ARGOCD_CHART_VERSION}"
 helm --kube-context "kind-${HUB_CLUSTER}" upgrade --install argocd argo-cd \
   --repo https://argoproj.github.io/argo-helm \
   --version "${ARGOCD_CHART_VERSION}" \
@@ -253,7 +262,42 @@ helm --kube-context "kind-${HUB_CLUSTER}" upgrade --install argocd argo-cd \
   --create-namespace \
   --wait \
   --timeout 5m
-kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" apply -k artifacts/manifests
+
+log "creating ClusterProfile provider config secret"
+kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" create secret generic cp-creds-secret \
+  --from-file=cp-creds.json=/dev/stdin \
+  --dry-run=client -o yaml <<EOF | kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" apply -f -
+{
+  "providers": [
+    {
+      "name": "secretreader",
+      "execConfig": {
+        "command": "${SECRETREADER_COMMAND}",
+        "apiVersion": "client.authentication.k8s.io/v1",
+        "provideClusterInfo": true
+      }
+    }
+  ]
+}
+EOF
+
+log "installing ClusterProfile controller via ${E2E_INSTALL_METHOD}"
+if [ "${E2E_INSTALL_METHOD}" = "kustomize" ]; then
+  kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" apply -k artifacts/manifests
+else
+  CLUSTERPROFILE_CRD_MANIFEST="$(grep -o 'https://[^[:space:]]*clusterprofiles\.yaml' artifacts/manifests/base/kustomization.yaml)"
+  kubectl --context "kind-${HUB_CLUSTER}" apply -f "${CLUSTERPROFILE_CRD_MANIFEST}"
+  helm --kube-context "kind-${HUB_CLUSTER}" upgrade --install cpia charts/argocd-clusterprofile-controller \
+    --namespace "${ARGOCD_NS}" \
+    --set fullnameOverride=argocd \
+    --set "image.repository=${E2E_IMG%:*}" \
+    --set "image.tag=${E2E_IMG##*:}" \
+    --set "controller.clusterProfileProvidersFile=/app/cp-creds/cp-creds.json" \
+    --set-json 'controller.extraVolumes=[{"name":"cp-creds-vol","secret":{"secretName":"cp-creds-secret"}}]' \
+    --set-json 'controller.extraVolumeMounts=[{"name":"cp-creds-vol","mountPath":"/app/cp-creds"}]' \
+    --wait \
+    --timeout 5m
+fi
 
 for resource in $(kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" get deploy,sts -o name); do
   kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" rollout status "${resource}" --timeout=300s
@@ -343,28 +387,13 @@ roleRef:
   name: argocd-secretreader
 EOF
 
-log "mounting secretreader plugin and ClusterProfile provider config"
+log "mounting secretreader plugin"
 patch_secretreader_volume sts/argocd-application-controller application-controller
 patch_secretreader_volume deploy/argocd-server server
 
-kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" create secret generic cp-creds-secret \
-  --from-file=cp-creds.json=/dev/stdin \
-  --dry-run=client -o yaml <<EOF | kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" apply -f -
-{
-  "providers": [
-    {
-      "name": "secretreader",
-      "execConfig": {
-        "command": "${SECRETREADER_COMMAND}",
-        "apiVersion": "client.authentication.k8s.io/v1",
-        "provideClusterInfo": true
-      }
-    }
-  ]
-}
-EOF
-
-kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" patch deploy/argocd-clusterprofile-controller --type strategic --patch '
+if [ "${E2E_INSTALL_METHOD}" = "kustomize" ]; then
+  log "mounting ClusterProfile provider config into controller"
+  kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" patch deploy/argocd-clusterprofile-controller --type strategic --patch '
 spec:
   template:
     spec:
@@ -380,6 +409,7 @@ spec:
           args:
             - "/manager"
             - "--clusterprofile-provider-file=/app/cp-creds/cp-creds.json"'
+fi
 
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" rollout status sts/argocd-application-controller --timeout=300s
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" rollout status deploy/argocd-server --timeout=300s
