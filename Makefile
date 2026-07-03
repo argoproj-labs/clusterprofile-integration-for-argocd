@@ -6,6 +6,9 @@ IMAGE_MULTIARCH_PLATFORMS?=linux/amd64,linux/arm64
 IMAGE_TAG?=latest
 IMG ?= $(IMAGE_REPOSITORY)/$(IMAGE_NAME):$(IMAGE_TAG)
 
+# E2E settings
+E2E_INSTALL_METHOD?=helm
+
 # Helm tooling settings
 HELM_CHART_DIRS := $(shell find charts -mindepth 1 -maxdepth 1 -type d -exec test -f '{}/Chart.yaml' ';' -print | sort)
 HELM_VALUES_SCHEMA_CHART := charts/argocd-clusterprofile-controller
@@ -53,7 +56,7 @@ test: fmt vet ## Run tests.
 .PHONY: e2e
 e2e: ## Run full kind-based e2e tests.
 	$(MAKE) docker-build
-	E2E_IMG=$(IMG) ./hack/e2e-kind.sh
+	E2E_IMG=$(IMG) E2E_INSTALL_METHOD=$(E2E_INSTALL_METHOD) ./hack/e2e-kind.sh
 
 ##@ Build
 
