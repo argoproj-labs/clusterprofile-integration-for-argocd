@@ -41,7 +41,7 @@ The controller uses `status.accessProviders` to build the corresponding Argo CD 
 
 These `ClusterProfile` resources may be synced automatically by a cluster manager or created manually. The `ClusterProfile` CRD from the [Cluster Inventory API](https://github.com/kubernetes-sigs/cluster-inventory-api) must exist in the cluster before you deploy the controller with Helm.
 
-When running as a standalone controller, it watches for `ClusterProfile` objects and generates `Secret`s for Argo CD. The generated `Secret`s are labeled with `argocd.argoproj.io/secret-type: cluster` and `argocd.argoproj.io/cluster-profile-origin`, and also include labels from the source `ClusterProfile`.
+When running as a standalone controller, it watches for `ClusterProfile` objects and generates `Secret`s for Argo CD. The generated `Secret`s are labeled with `argocd.argoproj.io/secret-type: cluster` and with the source `ClusterProfile`'s namespace and name, and also include labels from the source `ClusterProfile`. The Argo CD cluster name inside the `Secret` is `<ClusterProfile namespace>/<ClusterProfile name>`; see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the exact `Secret` naming and labeling scheme.
 
 
 ### Authentication

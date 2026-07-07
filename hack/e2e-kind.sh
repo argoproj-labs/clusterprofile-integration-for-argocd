@@ -19,9 +19,10 @@ SECRETREADER_COMMAND="${SECRETREADER_COMMAND:-/plugins/secretreader/bin/secretre
 HUB_CLUSTER="${HUB_CLUSTER:-${E2E_PREFIX}-hub}"
 SPOKE_CLUSTER="${SPOKE_CLUSTER:-${E2E_PREFIX}-spoke}"
 ARGOCD_NS="${ARGOCD_NS:-argocd}"
-APP_NAME="guestbook-spoke-cluster-full"
 CP_NAME="spoke-cluster-full"
-SECRET_NAME="cluster-${CP_NAME}"
+CLUSTER_NAME="${ARGOCD_NS}/${CP_NAME}"
+# Matches the ApplicationSet template's "guestbook-{{ .nameNormalized }}".
+APP_NAME="guestbook-${CLUSTER_NAME//\//-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -110,6 +111,15 @@ retry_until() {
   return 1
 }
 
+find_cluster_secret() {
+  SECRET_NAME="$(
+    kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" get secrets \
+      -l "argocd.argoproj.io/secret-type=cluster,argocd.argoproj.io/cluster-profile-namespace=${ARGOCD_NS},argocd.argoproj.io/cluster-profile-name=${CP_NAME}" \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true
+  )"
+  [ -n "${SECRET_NAME}" ]
+}
+
 wait_for_application() {
   local sync health phase
   for i in $(seq 1 600); do
@@ -163,13 +173,13 @@ verify_argocd_server_cluster_access() {
     )" || return 1
     [ "$(
       printf '%s' "${cluster_json}" | jq -r \
-        --arg name "${CP_NAME}" \
+        --arg name "${CLUSTER_NAME}" \
         --arg server "https://${SPOKE_IP}:6443" \
         'first(.[] | select(.name == $name and .server == $server) | .connectionState.status) // ""'
     )" = "Successful" ]
   }
-  if ! retry_until 120 "Argo CD server cluster connection to ${CP_NAME}" _cluster_connection_successful; then
-    echo "Argo CD server did not report a successful connection to ${CP_NAME}" >&2
+  if ! retry_until 120 "Argo CD server cluster connection to ${CLUSTER_NAME}" _cluster_connection_successful; then
+    echo "Argo CD server did not report a successful connection to ${CLUSTER_NAME}" >&2
     printf '%s\n' "${cluster_json}" | jq . || printf '%s\n' "${cluster_json}"
     return 1
   fi
@@ -457,12 +467,14 @@ EOF
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" patch clusterprofile "${CP_NAME}" --subresource=status --type=merge \
   -p "${STATUS_PATCH}"
 
-kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" wait --for=jsonpath='{.metadata.labels.environment}'=e2e "secret/${SECRET_NAME}" --timeout=120s
+if ! retry_until 120 "ClusterProfile cluster Secret for ${CLUSTER_NAME}" find_cluster_secret; then
+  echo "ClusterProfile controller did not create a cluster Secret for ${CLUSTER_NAME}" >&2
+  kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" get secrets -o wide
+  exit 1
+fi
 SECRET_JSON="$(kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" get secret "${SECRET_NAME}" -o json)"
 CONFIG="$(printf '%s' "${SECRET_JSON}" | jq -r '.data.config' | base64 -d)"
 
-test "$(printf '%s' "${SECRET_JSON}" | jq -r '.metadata.labels["argocd.argoproj.io/secret-type"]')" = "cluster"
-test "$(printf '%s' "${SECRET_JSON}" | jq -r '.metadata.labels["argocd.argoproj.io/cluster-profile-origin"]')" = "${ARGOCD_NS}-${CP_NAME}"
 test "$(printf '%s' "${SECRET_JSON}" | jq -r '.metadata.labels.environment')" = "e2e"
 test "$(printf '%s' "${SECRET_JSON}" | jq -r '.metadata.labels.team')" = "platform"
 test "$(printf '%s' "${SECRET_JSON}" | jq -r '.data.server' | base64 -d)" = "https://${SPOKE_IP}:6443"

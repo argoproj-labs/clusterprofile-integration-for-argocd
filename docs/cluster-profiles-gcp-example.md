@@ -178,11 +178,13 @@ spec:
 EOF
 ```
 
+The generated cluster name is the ClusterProfile's `<namespace>/<name>` (here `argocd/spoke-${GCP_LOCATION}`), and `nameNormalized` replaces `/` with `-`, so the Application is named `guestbook-argocd-spoke-${GCP_LOCATION}`.
+
 ## 6. Sync
 
 Trigger the application to sync:
 ```bash
-kubectl patch application guestbook-spoke-${GCP_LOCATION} -p '{"operation": {"sync": {"prune": true}}}' --type=merge
+kubectl patch application guestbook-argocd-spoke-${GCP_LOCATION} -p '{"operation": {"sync": {"prune": true}}}' --type=merge
 ```
 
 Verify that the `guestbook` application was deployed to the `spoke` cluster:
@@ -200,8 +202,8 @@ echo -e "\nClusterProfile controller errors:" && kubectl logs deployment/argocd-
 echo -e "\nApplication controller errors:" && kubectl logs statefulset/argocd-application-controller | grep Error
 echo -e "\nController:" && kubectl get pods | grep clusterprofile-controller
 echo -e "\nClusterProfile:" && kubectl get clusterprofiles | grep spoke-us-central1
-echo -e "\nSecret:" && kubectl get secrets | grep cluster-spoke-us-central1
-echo -e "\nApplication:" && kubectl get applications | grep guestbook-spoke-us-central1
+echo -e "\nSecret:" && kubectl get secrets -l argocd.argoproj.io/cluster-profile-name=spoke-us-central1
+echo -e "\nApplication:" && kubectl get applications | grep guestbook
 ```
 
 * If you see permission issues when connecting to the cluster, check that you didn't miss any of Step 4.

@@ -57,7 +57,7 @@ sequenceDiagram
     KubeAPI->>CPController: ClusterProfile add/update/delete event
     CPController->>ProviderFile: Resolve matching provider by name
     CPController->>CPController: Build Argo CD ClusterConfig
-    CPController->>Secret: Create or update data.name, data.server, data.config
+    CPController->>Secret: Create or update metadata, data.name, data.server, data.config
     CPController-->>KubeAPI: Reconcile complete
 ```
 
@@ -75,7 +75,10 @@ The resulting cluster Secret contains:
 
 | Secret field | Source |
 | --- | --- |
-| `data.name` | `ClusterProfile.metadata.name` |
+| `metadata.name` | Generated name, unique per ClusterProfile `<namespace>/<name>`; treat it as opaque and discover Secrets via the labels below |
+| `metadata.labels["argocd.argoproj.io/cluster-profile-namespace"]` | ClusterProfile namespace |
+| `metadata.labels["argocd.argoproj.io/cluster-profile-name"]` | ClusterProfile name, truncated if it exceeds the label value limit |
+| `data.name` | Full `<namespace>/<name>` of the source ClusterProfile |
 | `data.server` | Selected `AccessProvider.cluster.server` |
 | `data.config` | JSON-encoded Argo CD `ClusterConfig`, including TLS data and optional `execProviderConfig` |
 

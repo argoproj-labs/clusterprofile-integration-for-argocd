@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -9,6 +11,7 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/validate/content"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clusterinventory "sigs.k8s.io/cluster-inventory-api/apis/v1alpha1"
@@ -25,13 +28,15 @@ const (
 	// clusterProfileFinalizer is the finalizer used by the ClusterProfileReconciler to ensure that
 	// the corresponding Secret is deleted when the ClusterProfile is deleted.
 	clusterProfileFinalizer = "argoproj.io/cluster-profile-finalizer"
-	// secretNameTemplate is the template used to generate the name of the Secret for a ClusterProfile.
-	secretNameTemplate = "cluster-%s"
-	// clusterProfileOriginLabel is the label used to identify the ClusterProfile that a Secret was created from.
-	clusterProfileOriginLabel = "argocd.argoproj.io/cluster-profile-origin"
-	secretDataNameKey         = "name"
-	secretDataServerKey       = "server"
-	secretDataConfigKey       = "config"
+	// clusterProfileNamespaceLabel is the label carrying the namespace of the source ClusterProfile.
+	clusterProfileNamespaceLabel = "argocd.argoproj.io/cluster-profile-namespace"
+	// clusterProfileNameLabel is the label carrying the name of the source ClusterProfile.
+	clusterProfileNameLabel  = "argocd.argoproj.io/cluster-profile-name"
+	clusterSecretNamePrefix  = "cluster-"
+	clusterProfileHashLength = 12
+	secretDataNameKey        = "name"
+	secretDataServerKey      = "server"
+	secretDataConfigKey      = "config"
 )
 
 // ClusterProfileReconciler reconciles a ClusterProfile object with a corresponding Secret
@@ -77,7 +82,7 @@ func (r *ClusterProfileReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	// Create or update the secret for the ClusterProfile.
-	secretName := fmt.Sprintf(secretNameTemplate, clusterProfile.Name)
+	secretName := clusterSecretName(&clusterProfile)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName,
@@ -107,8 +112,8 @@ func (r *ClusterProfileReconciler) pruneSecret(
 		return nil
 	}
 
-	// Construct the secret name from the ClusterProfile name.
-	secretName := fmt.Sprintf(secretNameTemplate, clusterProfile.Name)
+	// Construct the secret name from the ClusterProfile namespace and name.
+	secretName := clusterSecretName(clusterProfile)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName,
@@ -138,12 +143,13 @@ func (r *ClusterProfileReconciler) mutateSecret(
 	clusterProfile *clusterinventory.ClusterProfile,
 ) error {
 	// Set labels on the secret to identify it as a cluster secret and link it to the ClusterProfile.
-	labels := make(map[string]string, len(clusterProfile.Labels)+2)
+	labels := make(map[string]string, len(clusterProfile.Labels)+3)
 	for key, value := range clusterProfile.Labels {
 		labels[key] = value
 	}
 	labels[common.LabelKeySecretType] = common.LabelValueSecretTypeCluster
-	labels[clusterProfileOriginLabel] = fmt.Sprintf("%s-%s", clusterProfile.Namespace, clusterProfile.Name)
+	labels[clusterProfileNamespaceLabel] = clusterProfile.Namespace
+	labels[clusterProfileNameLabel] = clusterProfileNameLabelValue(clusterProfile)
 	secret.Labels = labels
 
 	// Check for supported cloud provider. For example, a Cluster Profile with an access provider named
@@ -166,7 +172,7 @@ func (r *ClusterProfileReconciler) mutateSecret(
 			return fmt.Errorf("failed to marshal config: %w", err)
 		}
 		secret.StringData = map[string]string{
-			secretDataNameKey:   clusterProfile.Name,
+			secretDataNameKey:   clusterProfileOrigin(clusterProfile),
 			secretDataServerKey: provider.Cluster.Server,
 			secretDataConfigKey: string(configBytes),
 		}
@@ -239,12 +245,49 @@ func (r *ClusterProfileReconciler) mutateSecret(
 	}
 
 	secret.StringData = map[string]string{
-		secretDataNameKey:   clusterProfile.Name,
+		secretDataNameKey:   clusterProfileOrigin(clusterProfile),
 		secretDataServerKey: config.Host,
 		secretDataConfigKey: string(configBytes),
 	}
 
 	return nil
+}
+
+func clusterSecretName(clusterProfile *clusterinventory.ClusterProfile) string {
+	return boundedNameWithHash(
+		clusterSecretNamePrefix+clusterProfile.Name,
+		clusterProfileHash(clusterProfile),
+		content.DNS1123SubdomainMaxLength,
+	)
+}
+
+func clusterProfileOrigin(clusterProfile *clusterinventory.ClusterProfile) string {
+	return client.ObjectKeyFromObject(clusterProfile).String()
+}
+
+// clusterProfileNameLabelValue returns the ClusterProfile name, truncated and suffixed with a hash
+// if the raw name does not fit within the label value limit.
+func clusterProfileNameLabelValue(clusterProfile *clusterinventory.ClusterProfile) string {
+	if len(clusterProfile.Name) <= content.LabelValueMaxLength {
+		return clusterProfile.Name
+	}
+	return boundedNameWithHash(
+		clusterProfile.Name,
+		clusterProfileHash(clusterProfile),
+		content.LabelValueMaxLength,
+	)
+}
+
+func clusterProfileHash(clusterProfile *clusterinventory.ClusterProfile) string {
+	sum := sha256.Sum256([]byte(clusterProfileOrigin(clusterProfile)))
+	return hex.EncodeToString(sum[:])[:clusterProfileHashLength]
+}
+
+func boundedNameWithHash(name, hash string, maxLength int) string {
+	if maxNameLength := maxLength - len(hash) - 1; len(name) > maxNameLength {
+		name = strings.TrimRight(name[:maxNameLength], "-.")
+	}
+	return name + "-" + hash
 }
 
 func cloneAccessConfig(config *access.Config) *access.Config {
