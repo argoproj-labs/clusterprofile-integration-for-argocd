@@ -139,7 +139,7 @@ jobs:
         install-method:
           - kustomize
           - helm
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -186,4 +186,6 @@ jobs:
           jq --version
 
       - name: Run full e2e
-        run: make e2e E2E_INSTALL_METHOD=${{ matrix.install-method }}
+        env:
+          E2E_IMAGE: example.invalid:5000/cpia/controller:e2e-${{ github.sha }}-${{ matrix.install-method }}
+        run: make e2e IMG="${E2E_IMAGE}" E2E_INSTALL_METHOD=${{ matrix.install-method }}

@@ -8,6 +8,11 @@ metadata:
   name: argocd-clusterprofile-controller
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: argocd-clusterprofile-controller
@@ -16,15 +21,33 @@ spec:
       labels:
         app.kubernetes.io/name: argocd-clusterprofile-controller
     spec:
+      terminationGracePeriodSeconds: 30
       containers:
         - args:
             - /manager
+            - --enable-leader-election=true
           image: ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd:latest
           imagePullPolicy: IfNotPresent
           name: argocd-clusterprofile-controller
           ports:
             - containerPort: 8080
               name: metrics
+            - containerPort: 8081
+              name: healthz
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: healthz
+          resources:
+            limits:
+              memory: 256Mi
+            requests:
+              cpu: 10m
+              memory: 128Mi
           env:
             - name: GRPC_ENABLE_TXT_SERVICE_CONFIG
               valueFrom:
@@ -36,12 +59,6 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-            - name: ARGOCD_CLUSTERPROFILE_CONTROLLER_ENABLE_LEADER_ELECTION
-              valueFrom:
-                configMapKeyRef:
-                  key: clusterprofilecontroller.enable.leader.election
-                  name: argocd-cmd-params-cm
-                  optional: true
             - name: ARGOCD_CLUSTERPROFILE_CONTROLLER_DEBUG
               valueFrom:
                 configMapKeyRef:

@@ -9,7 +9,7 @@ When reading the details below, it may be helpful to have concrete examples. See
 
 ## Prerequisites & Compatibility
 
-- **Kubernetes**: v1.26+
+- **Kubernetes**: v1.27+
 - **Argo CD**: v2.8+ (including v3.0)
 - **Go** (for local development): v1.26+
 
@@ -111,11 +111,24 @@ The Helm chart does not install the `clusterprofiles.multicluster.x-k8s.io` CRD.
 Install the Cluster Inventory API CRD separately, or use a cluster where another
 component already owns it.
 
+### Deployment and high availability
+
+The bundled Helm and Kustomize deployments enable leader election. For high availability, set Helm's `replicaCount` to at least 2 or use a Kustomize overlay to run multiple controller replicas.
+
+Every namespace watched for `ClusterProfile`s is also a namespace where the
+controller writes `Secret`s. The Helm chart creates a `Role` in each configured
+namespace, or a `ClusterRole` when watching all namespaces. The Kustomize
+manifests grant cluster-wide `Secret` access to support
+`--cluster-profile-namespaces='*'`.
+
 To provide an access providers file to the controller, you should configure the `argocd-clusterprofile-controller` deployment with the `--clusterprofile-provider-file` argument (or `ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTERPROFILE_PROVIDER_FILE` environment variable). This should point to a mounted file that contains the configuration for the access providers.
 
 ### Configuration Parameters
 
-The controller can be configured via command-line arguments or equivalent environment variables.
+The controller binary can be configured via command-line arguments or
+equivalent environment variables. The defaults below apply when invoking the
+binary directly; packaged manifests may set explicit values, as described
+above.
 
 **Note**: Only the first two arguments are specific to this controller; the rest are standard Argo CD controller arguments.
 

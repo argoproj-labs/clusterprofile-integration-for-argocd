@@ -19,7 +19,6 @@
         "clusterProfileNamespaces",
         "metricsPort",
         "probePort",
-        "enableLeaderElection",
         "dryRun",
         "debug",
         "logFormat",
@@ -53,14 +52,14 @@
           "additionalProperties": false
         },
         "args": {
-          "description": "Extra command-line arguments appended after the chart-managed arguments.",
+          "description": "Extra command-line arguments for the controller.",
           "type": "array",
           "items": {
             "type": "string"
           }
         },
         "clusterProfileNamespaces": {
-          "description": "Namespaces to watch for ClusterProfile resources. Empty means the release namespace. Use `*` alone to watch all namespaces. Generated Argo CD cluster Secrets are created in the same namespace as their source ClusterProfile, so when `rbac.create` is true, matching ClusterProfile and Secret RBAC is generated for every watched namespace.",
+          "description": "Namespaces to watch for ClusterProfile resources. Empty means the release namespace. Use `*` alone to watch all namespaces. When `rbac.create` is true, the chart creates ClusterProfile and Secret permissions matching this watch scope.",
           "oneOf": [
             {
               "type": "array",
@@ -94,10 +93,6 @@
         },
         "dryRun": {
           "description": "Enable dry-run mode.",
-          "type": "boolean"
-        },
-        "enableLeaderElection": {
-          "description": "Enable controller-runtime leader election.",
           "type": "boolean"
         },
         "extraEnv": {
@@ -287,6 +282,102 @@
         "type": "string"
       }
     },
+    "podDisruptionBudget": {
+      "oneOf": [
+        {
+          "properties": {
+            "maxUnavailable": {
+              "type": "null"
+            },
+            "minAvailable": {
+              "not": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "maxUnavailable": {
+              "not": {
+                "type": "null"
+              }
+            },
+            "minAvailable": {
+              "type": "null"
+            }
+          }
+        }
+      ],
+      "required": [
+        "enabled",
+        "unhealthyPodEvictionPolicy",
+        "labels",
+        "annotations"
+      ],
+      "properties": {
+        "annotations": {
+          "description": "Extra annotations for the PodDisruptionBudget.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "description": "Create a PodDisruptionBudget for the controller.",
+          "type": "boolean"
+        },
+        "labels": {
+          "description": "Extra labels for the PodDisruptionBudget.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "maxUnavailable": {
+          "description": "Maximum number or percentage of controller Pods that may be unavailable. Set minAvailable to null when using this field.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^(100|[1-9]?[0-9])%$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "minAvailable": {
+          "description": "Minimum number or percentage of controller Pods that must remain available. Set maxUnavailable to null when using this field.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^(100|[1-9]?[0-9])%$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unhealthyPodEvictionPolicy": {
+          "description": "Policy for evicting unhealthy Pods. Empty uses the Kubernetes default.",
+          "type": "string",
+          "enum": [
+            "",
+            "IfHealthyBudget",
+            "AlwaysAllow"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "podLabels": {
       "description": "Extra labels for the controller pods.",
       "type": "object",
@@ -311,7 +402,7 @@
       ],
       "properties": {
         "create": {
-          "description": "Create namespaced RBAC resources for the controller.",
+          "description": "Create RBAC resources for the controller.",
           "type": "boolean"
         }
       },
@@ -410,6 +501,12 @@
       },
       "additionalProperties": false
     },
+    "terminationGracePeriodSeconds": {
+      "description": "Pod termination grace period in seconds.",
+      "type": "integer",
+      "maximum": 3600,
+      "minimum": 30
+    },
     "tolerations": {
       "description": "Tolerations for the controller pod.",
       "type": "array",
@@ -418,10 +515,27 @@
       }
     },
     "topologySpreadConstraints": {
-      "description": "Topology spread constraints for the controller pod.",
+      "description": "Topology spread constraints for the controller pods.",
       "type": "array",
       "items": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "matchLabelKeys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "maxSkew": {
+            "type": "integer"
+          },
+          "topologyKey": {
+            "type": "string"
+          },
+          "whenUnsatisfiable": {
+            "type": "string"
+          }
+        }
       }
     }
   },

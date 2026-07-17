@@ -73,9 +73,15 @@ test: fmt vet ## Run tests.
 	go test ./... -coverprofile cover.out
 
 .PHONY: e2e
-e2e: ## Run full kind-based e2e tests.
+e2e: ## Run full live and multi-node HA kind-based e2e tests.
 	$(MAKE) docker-build
 	E2E_IMG=$(IMG) E2E_INSTALL_METHOD=$(E2E_INSTALL_METHOD) ./hack/e2e-kind.sh
+	E2E_IMG=$(IMG) E2E_INSTALL_METHOD=$(E2E_INSTALL_METHOD) ./hack/e2e-ha-kind.sh
+
+.PHONY: e2e-ha
+e2e-ha: ## Run multi-node HA, failover, backlog, PDB, and rollout e2e tests.
+	$(MAKE) docker-build
+	E2E_IMG=$(IMG) E2E_INSTALL_METHOD=$(E2E_INSTALL_METHOD) ./hack/e2e-ha-kind.sh
 
 ##@ Build
 

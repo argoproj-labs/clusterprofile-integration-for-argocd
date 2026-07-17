@@ -1,0 +1,34 @@
+{{- $pdb := .Values.podDisruptionBudget -}}
+{{- $hasMinAvailable := not (kindIs "invalid" $pdb.minAvailable) -}}
+{{- $hasMaxUnavailable := not (kindIs "invalid" $pdb.maxUnavailable) -}}
+{{- if eq $hasMinAvailable $hasMaxUnavailable -}}
+{{- fail "podDisruptionBudget must set exactly one of minAvailable or maxUnavailable" -}}
+{{- end -}}
+{{- if $pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "argocd-clusterprofile-controller.controller.fullname" . }}
+  namespace: {{ include "argocd-clusterprofile-controller.namespace" . }}
+  labels:
+    {{- include "argocd-clusterprofile-controller.labels" . | nindent 4 }}
+    {{- with $pdb.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with $pdb.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if $hasMinAvailable }}
+  minAvailable: {{ $pdb.minAvailable | toJson }}
+  {{- else }}
+  maxUnavailable: {{ $pdb.maxUnavailable | toJson }}
+  {{- end }}
+  {{- with $pdb.unhealthyPodEvictionPolicy }}
+  unhealthyPodEvictionPolicy: {{ . }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "argocd-clusterprofile-controller.selectorLabels" . | nindent 6 }}
+{{- end }}
