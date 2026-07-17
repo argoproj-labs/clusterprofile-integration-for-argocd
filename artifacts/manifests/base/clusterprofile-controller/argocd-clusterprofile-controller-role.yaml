@@ -8,36 +8,16 @@ metadata:
   name: argocd-clusterprofile-controller
 rules:
   - apiGroups:
-      - argoproj.io
-    resources:
-      - applications
-    verbs:
-      - get
-      - list
-      - watch
-  - apiGroups:
-      - argoproj.io
-    resources:
-      - appprojects
-    verbs:
-      - get
-      - list
-      - watch
-  - apiGroups:
       - ""
     resources:
       - events
     verbs:
       - create
-      - get
-      - list
       - patch
-      - watch
   - apiGroups:
       - ""
     resources:
       - secrets
-      - configmaps
     verbs:
       - create
       - delete
@@ -72,4 +52,3 @@ rules:
     verbs:
       - get
       - update
-      - create

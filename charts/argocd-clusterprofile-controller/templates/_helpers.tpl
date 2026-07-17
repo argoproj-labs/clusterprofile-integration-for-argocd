@@ -144,7 +144,9 @@ Secret permissions required in every namespace watched for ClusterProfiles.
 Release-namespace permissions required by the controller.
 */}}
 {{- define "argocd-clusterprofile-controller.localRules" -}}
+{{- if eq (include "argocd-clusterprofile-controller.watchesReleaseNamespace" .) "true" }}
 {{- include "argocd-clusterprofile-controller.secretRules" . }}
+{{- end }}
 {{- if .Values.controller.enableLeaderElection }}
 - apiGroups:
     - coordination.k8s.io
@@ -161,6 +163,5 @@ Release-namespace permissions required by the controller.
   verbs:
     - get
     - update
-    - create
 {{- end }}
 {{- end }}
