@@ -33,10 +33,23 @@ rules:
       - list
       - patch
       - watch
+  # Secrets are mirrored into the namespace of each watched ClusterProfile, so
+  # supporting --cluster-profile-namespaces='*' needs cluster-wide write verbs.
   - apiGroups:
       - ""
     resources:
       - secrets
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - ""
+    resources:
       - configmaps
     verbs:
       - get
@@ -49,8 +62,6 @@ rules:
     verbs:
       - get
       - list
-      - patch
-      - update
       - watch
   # argocd-clusterprofile-controller leader election rules
   # Create with resourceNames fails, so use a separate rule for the lease creation

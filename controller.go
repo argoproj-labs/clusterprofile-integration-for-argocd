@@ -22,9 +22,6 @@ import (
 )
 
 const (
-	// clusterProfileFinalizer is the finalizer used by the ClusterProfileReconciler to ensure that
-	// the corresponding Secret is deleted when the ClusterProfile is deleted.
-	clusterProfileFinalizer = "argoproj.io/cluster-profile-finalizer"
 	// secretNameTemplate is the template used to generate the name of the Secret for a ClusterProfile.
 	secretNameTemplate = "cluster-%s"
 	// clusterProfileOriginLabel is the label used to identify the ClusterProfile that a Secret was created from.
@@ -37,17 +34,16 @@ const (
 // ClusterProfileReconciler reconciles a ClusterProfile object with a corresponding Secret
 type ClusterProfileReconciler struct {
 	client.Client
-	Log       logr.Logger
-	Scheme    *runtime.Scheme
-	Namespace string
+	Log    logr.Logger
+	Scheme *runtime.Scheme
 	// ClusterProfileProviderFile is the path to the file containing the cluster profile provider configuration.
 	ClusterProfileProviderFile string
 	// AccessProviders is the set of access providers used to build the kubeconfig for a ClusterProfile.
 	AccessProviders *access.Config
 }
 
-//+kubebuilder:rbac:groups=multicluster.x-k8s.io,resources=clusterprofiles,verbs=get;list;watch;update;patch
-//+kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=multicluster.x-k8s.io,resources=clusterprofiles,verbs=get;list;watch
+//+kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch
 
 func (r *ClusterProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log.WithValues("clusterprofile", req.NamespacedName)
@@ -62,26 +58,16 @@ func (r *ClusterProfileReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// If the Cluster Profile is being deleted, prune the corresponding secret and remove the finalizer.
 	if !clusterProfile.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, r.pruneSecret(ctx, &clusterProfile)
+		return ctrl.Result{}, nil
 	}
 
-	// Add finalizer for pruning secret
-	if !controllerutil.ContainsFinalizer(&clusterProfile, clusterProfileFinalizer) {
-		controllerutil.AddFinalizer(&clusterProfile, clusterProfileFinalizer)
-		if err := r.Update(ctx, &clusterProfile); err != nil {
-			log.Error(err, "unable to update ClusterProfile")
-			return ctrl.Result{}, err
-		}
-	}
-
-	// Create or update the secret for the ClusterProfile.
+	// Create or update the secret in the ClusterProfile's namespace.
 	secretName := fmt.Sprintf(secretNameTemplate, clusterProfile.Name)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName,
-			Namespace: r.Namespace,
+			Namespace: clusterProfile.Namespace,
 		},
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
@@ -95,48 +81,20 @@ func (r *ClusterProfileReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	return ctrl.Result{}, nil
 }
 
-// pruneSecret handles the deletion of the Secret associated with a ClusterProfile.
-func (r *ClusterProfileReconciler) pruneSecret(
-	ctx context.Context,
-	clusterProfile *clusterinventory.ClusterProfile,
-) error {
-	log := r.Log.WithValues("clusterprofile", clusterProfile.Name)
-
-	// If the finalizer is not present, the deletion logic has already been handled.
-	if !controllerutil.ContainsFinalizer(clusterProfile, clusterProfileFinalizer) {
-		return nil
-	}
-
-	// Construct the secret name from the ClusterProfile name.
-	secretName := fmt.Sprintf(secretNameTemplate, clusterProfile.Name)
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretName,
-			Namespace: r.Namespace,
-		},
-	}
-
-	// Attempt to delete the secret.
-	err := r.Delete(ctx, secret)
-	if err != nil && !errors.IsNotFound(err) {
-		log.Error(err, "unable to delete secret")
-		return err
-	}
-
-	// Once the secret is gone, remove the finalizer from the ClusterProfile.
-	controllerutil.RemoveFinalizer(clusterProfile, clusterProfileFinalizer)
-	if err := r.Update(ctx, clusterProfile); err != nil {
-		log.Error(err, "unable to update ClusterProfile for deletion")
-		return err
-	}
-	return nil
-}
-
 // mutateSecret populates the secret with data from the ClusterProfile.
 func (r *ClusterProfileReconciler) mutateSecret(
 	secret *corev1.Secret,
 	clusterProfile *clusterinventory.ClusterProfile,
 ) error {
+	// BlockOwnerDeletion is disabled because nothing waits on deletion ordering and setting it
+	// would require clusterprofiles/finalizers update permission under the
+	// OwnerReferencesPermissionEnforcement admission plugin.
+	if err := controllerutil.SetControllerReference(
+		clusterProfile, secret, r.Scheme, controllerutil.WithBlockOwnerDeletion(false),
+	); err != nil {
+		return fmt.Errorf("failed to set controller reference: %w", err)
+	}
+
 	// Set labels on the secret to identify it as a cluster secret and link it to the ClusterProfile.
 	labels := make(map[string]string, len(clusterProfile.Labels)+2)
 	for key, value := range clusterProfile.Labels {

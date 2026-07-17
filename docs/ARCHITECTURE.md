@@ -4,10 +4,10 @@ This project makes clusters represented by Cluster Inventory API
 `ClusterProfile` resources available to Argo CD as managed clusters.
 
 It does this by translating ClusterProfile resources into Argo CD cluster
-Secrets. The ClusterProfile controller writes those Secrets and does not
-authenticate to registered clusters. Argo CD components use the translated
-Secrets when accessing those clusters and may execute configured provider
-plugins to obtain credentials.
+Secrets. The ClusterProfile controller writes each Secret into the namespace of
+its source ClusterProfile and does not authenticate to registered clusters.
+Argo CD components use the translated Secrets when accessing those clusters and
+may execute configured provider plugins to obtain credentials.
 
 ## Component Model
 
