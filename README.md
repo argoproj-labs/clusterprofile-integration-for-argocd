@@ -41,7 +41,7 @@ The controller uses `status.accessProviders` to build the corresponding Argo CD 
 
 These `ClusterProfile` resources may be synced automatically by a cluster manager or created manually. The `ClusterProfile` CRD from the [Cluster Inventory API](https://github.com/kubernetes-sigs/cluster-inventory-api) must exist in the cluster before you deploy the controller with Helm.
 
-When running as a standalone controller, it watches for `ClusterProfile` objects and generates `Secret`s for Argo CD. The generated `Secret`s are labeled with `argocd.argoproj.io/secret-type: cluster` and `argocd.argoproj.io/cluster-profile-origin`, and also include labels from the source `ClusterProfile`.
+When running as a standalone controller, it watches for `ClusterProfile` objects and generates `Secret`s for Argo CD. Each `Secret` is created **in the same namespace as its source `ClusterProfile`**, with an owner reference back to it, and is named `cluster-<ClusterProfile name>`. The generated `Secret`s are labeled with `argocd.argoproj.io/secret-type: cluster` and `argocd.argoproj.io/cluster-profile-origin`, and also include labels from the source `ClusterProfile`. Names or label values that would exceed the Kubernetes metadata limits are replaced with deterministic bounded encodings; see the [architecture](docs/ARCHITECTURE.md) for the exact forms and their collision behavior.
 
 ### Namespace placement
 
@@ -89,6 +89,19 @@ To provide this file to the controller, configure the `argocd-clusterprofile-con
 ### Deletion
 
 Each generated `Secret` carries an owner reference to its `ClusterProfile`, so when the `ClusterProfile` is deleted, Kubernetes garbage collection removes the corresponding `Secret` automatically.
+
+The controller also removes its exact-owned `Secret` when the ClusterProfile no
+longer advertises an access provider. If rendering temporarily fails while the
+same provider is still advertised—for example, because the controller's local
+providers file is unavailable—the last successfully fingerprinted Secret is
+kept and the reconcile returns an error. ClusterProfile label changes still
+converge without re-rendering credentials, so ApplicationSet selection does not
+remain stale. Changing the advertised provider or cluster connection data
+invalidates the last-known-good Secret, provided its persisted payload still
+matches the successful render fingerprint. An unrecognized or mismatched
+fingerprint is retained conservatively because the controller cannot prove that
+the persisted payload is safe to revoke. See
+the [architecture](docs/ARCHITECTURE.md) for the complete failure-state behavior.
 
 ## Installation & Configuration
 

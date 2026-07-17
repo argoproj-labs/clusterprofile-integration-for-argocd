@@ -2,15 +2,12 @@
 
 set -euo pipefail
 
-E2E_IMG="${E2E_IMG:-ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd:latest}"
-E2E_IMAGE_REPOSITORY="${E2E_IMG%:*}"
-E2E_IMAGE_TAG="${E2E_IMG##*:}"
-E2E_PREFIX="${E2E_PREFIX:-cpia-ha-$$}"
-E2E_INSTALL_METHOD="${E2E_INSTALL_METHOD:-helm}"
-KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-}"
-CLUSTER_NAME="${E2E_PREFIX}-hub"
-HUB_CONTEXT="kind-${CLUSTER_NAME}"
-NAMESPACE="argocd"
+: "${E2E_SHARED_KUBECONFIG:?E2E_SHARED_KUBECONFIG must point to the parent e2e kubeconfig}"
+: "${E2E_HUB_CLUSTER:?E2E_HUB_CLUSTER must name the parent e2e hub cluster}"
+: "${E2E_ARGOCD_NS:?E2E_ARGOCD_NS must name the parent e2e Argo CD namespace}"
+
+HUB_CONTEXT="kind-${E2E_HUB_CLUSTER}"
+NAMESPACE="${E2E_ARGOCD_NS}"
 CONTROLLER_LABEL="app.kubernetes.io/name=argocd-clusterprofile-controller"
 PROFILE_COUNT="${HA_PROFILE_COUNT:-64}"
 CONTROLLER_CLIENT_QPS=5
@@ -19,8 +16,7 @@ CONTROLLER_CLIENT_BURST=1
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 WORK_DIR="$(mktemp -d)"
-export KUBECONFIG="${WORK_DIR}/kubeconfig"
-CLUSTER_CREATED=0
+export KUBECONFIG="${E2E_SHARED_KUBECONFIG}"
 PATCH_PID=""
 HELD_POD=""
 LEASE_WATCH_PID=""
@@ -69,26 +65,21 @@ cleanup() {
   stop_leader_monitor
   stop_background "${PLANNED_LOG_PID}"
   stop_background "${PATCH_PID}"
-  if [ "${status}" -ne 0 ] && [ "${CLUSTER_CREATED}" = "1" ]; then
+  if [ "${status}" -ne 0 ]; then
     dump_diagnostics
   fi
-  if [ "${CLUSTER_CREATED}" = "1" ]; then
-    if [ -n "${HELD_POD}" ]; then
-      kubectl --context "${HUB_CONTEXT}" -n "${NAMESPACE}" \
-        patch "pod/${HELD_POD}" --type=json \
-        -p='[{"op":"remove","path":"/metadata/finalizers"}]' >/dev/null 2>&1 || true
-    fi
-    for node in $(kubectl --context "${HUB_CONTEXT}" get nodes -o name 2>/dev/null); do
-      kubectl --context "${HUB_CONTEXT}" uncordon "${node}" >/dev/null 2>&1 || true
-    done
-    if [ "${E2E_SKIP_CLEANUP:-0}" != "1" ]; then
-      kind delete cluster --name "${CLUSTER_NAME}" >/dev/null 2>&1 || true
-    else
-      log "leaving cluster and kubeconfig for debugging: ${KUBECONFIG}"
-    fi
+  if [ -n "${HELD_POD}" ]; then
+    kubectl --context "${HUB_CONTEXT}" -n "${NAMESPACE}" \
+      patch "pod/${HELD_POD}" --type=json \
+      -p='[{"op":"remove","path":"/metadata/finalizers"}]' >/dev/null 2>&1 || true
   fi
+  for node in $(kubectl --context "${HUB_CONTEXT}" get nodes -o name 2>/dev/null); do
+    kubectl --context "${HUB_CONTEXT}" uncordon "${node}" >/dev/null 2>&1 || true
+  done
   if [ "${E2E_SKIP_CLEANUP:-0}" != "1" ]; then
     rm -rf "${WORK_DIR}"
+  else
+    log "leaving HA diagnostics in ${WORK_DIR}; parent e2e owns cluster cleanup"
   fi
   exit "${status}"
 }
@@ -181,7 +172,8 @@ pod_metrics_url() {
 }
 
 pod_metrics() {
-  kubectl --context "${HUB_CONTEXT}" get --raw "$(pod_metrics_url "$1")"
+  kubectl --context "${HUB_CONTEXT}" --request-timeout=5s \
+    get --raw "$(pod_metrics_url "$1")"
 }
 
 # bash arithmetic is integer-only, so metric values need awk.
@@ -866,16 +858,6 @@ validate_static_shapes() {
   fi
 }
 
-apply_test_controller_config() {
-  local -a literals=(
-    "--from-literal=clusterprofilecontroller.k8s.client.qps=${CONTROLLER_CLIENT_QPS}"
-    "--from-literal=clusterprofilecontroller.k8s.client.burst=${CONTROLLER_CLIENT_BURST}"
-  )
-  kubectl --context "${HUB_CONTEXT}" -n "${NAMESPACE}" \
-    create configmap argocd-cmd-params-cm "${literals[@]}" \
-    --dry-run=client -o yaml | kubectl --context "${HUB_CONTEXT}" apply -f - >/dev/null
-}
-
 test_controller_config_is_current() {
   kubectl --context "${HUB_CONTEXT}" -n "${NAMESPACE}" \
     get configmap argocd-cmd-params-cm -o json | jq -e \
@@ -885,215 +867,31 @@ test_controller_config_is_current() {
         .data["clusterprofilecontroller.k8s.client.burst"] == $burst' >/dev/null
 }
 
-helm_apply_controller() {
-  local replicas="$1"
-  helm --kube-context "${HUB_CONTEXT}" upgrade --install cpia \
-    "${REPO_ROOT}/charts/argocd-clusterprofile-controller" \
-    --namespace "${NAMESPACE}" \
-    --set fullnameOverride=argocd \
-    --set-string "image.repository=${E2E_IMAGE_REPOSITORY}" \
-    --set-string "image.tag=${E2E_IMAGE_TAG}" \
-    --set image.pullPolicy=IfNotPresent \
-    --set "replicaCount=${replicas}" \
-    --set-string 'nodeSelector.e2e\.argoproj\.io/ha-worker=true' \
-    --set-json 'topologySpreadConstraints=[{"maxSkew":1,"topologyKey":"kubernetes.io/hostname","whenUnsatisfiable":"DoNotSchedule","matchLabelKeys":["pod-template-hash"],"labelSelector":{"matchLabels":{"app.kubernetes.io/name":"argocd-clusterprofile-controller"}}}]' \
-    --wait --timeout 5m
-}
-
-install_controller() {
-  if [ "${E2E_INSTALL_METHOD}" = "helm" ]; then
-    log "installing an elected Helm singleton"
-    helm_apply_controller 1
-    if ! retry_until 120 "ready elected Helm singleton" \
-      deployment_is_ready_with_replicas 1 ||
-      ! retry_until 60 "Helm singleton Lease" lease_has_live_holder; then
-      echo "Helm singleton did not become Ready and acquire its Lease" >&2
-      return 1
-    fi
-    log "scaling the elected Helm singleton directly to HA"
-    helm_apply_controller 2
-    return
-  fi
-
-  local singleton_overlay overlay manifests_path control_plane_ip
-  singleton_overlay="${WORK_DIR}/kustomize-singleton"
-  overlay="${WORK_DIR}/kustomize-ha"
-  mkdir -p "${singleton_overlay}" "${overlay}"
-  # Both overlays sit directly under WORK_DIR, so one relative path serves both.
-  manifests_path="$(realpath --relative-to="${overlay}" "${REPO_ROOT}/artifacts/manifests")"
-  control_plane_ip="$(
-    kubectl --context "${HUB_CONTEXT}" get nodes \
-      -l node-role.kubernetes.io/control-plane \
-      -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}'
-  )"
-  cat >"${singleton_overlay}/kustomization.yaml" <<EOF
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-namespace: ${NAMESPACE}
-resources:
-  - ${manifests_path}
-patches:
-  - target:
-      kind: Deployment
-      name: argocd-clusterprofile-controller
-    patch: |-
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: argocd-clusterprofile-controller
-      spec:
-        template:
-          spec:
-            nodeSelector:
-              kubernetes.io/os: linux
-              e2e.argoproj.io/ha-worker: "true"
-            containers:
-              - name: argocd-clusterprofile-controller
-                imagePullPolicy: IfNotPresent
-images:
-  - name: ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd
-    newName: ${E2E_IMAGE_REPOSITORY}
-    newTag: ${E2E_IMAGE_TAG}
-EOF
-  log "installing an elected Kustomize singleton"
-  kubectl kustomize "${singleton_overlay}" --load-restrictor=LoadRestrictionsNone | \
-    kubectl --context "${HUB_CONTEXT}" apply -f - >/dev/null
-  if ! retry_until 120 "ready elected Kustomize singleton" \
-    deployment_is_ready_with_replicas 1 ||
-    ! retry_until 60 "Kustomize singleton Lease" lease_has_live_holder; then
-    echo "Kustomize singleton did not become Ready and acquire its Lease" >&2
-    return 1
-  fi
-  log "scaling the elected Kustomize singleton directly to HA"
-  cat >"${overlay}/poddisruptionbudget.yaml" <<EOF
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: argocd-clusterprofile-controller
-  labels:
-    app.kubernetes.io/name: argocd-clusterprofile-controller
-    app.kubernetes.io/part-of: argocd
-    app.kubernetes.io/component: clusterprofile-controller
-spec:
-  maxUnavailable: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: argocd-clusterprofile-controller
-EOF
-  cat >"${overlay}/kustomization.yaml" <<EOF
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-namespace: ${NAMESPACE}
-resources:
-  - ${manifests_path}
-  - poddisruptionbudget.yaml
-configMapGenerator:
-  - name: argocd-cmd-params-cm
-    behavior: create
-    literals:
-      - clusterprofilecontroller.k8s.client.qps=${CONTROLLER_CLIENT_QPS}
-      - clusterprofilecontroller.k8s.client.burst=${CONTROLLER_CLIENT_BURST}
-generatorOptions:
-  disableNameSuffixHash: true
-patches:
-  - target:
-      kind: Deployment
-      name: argocd-clusterprofile-controller
-    patch: |-
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: argocd-clusterprofile-controller
-      spec:
-        replicas: 2
-        template:
-          spec:
-            nodeSelector:
-              kubernetes.io/os: linux
-              e2e.argoproj.io/ha-worker: "true"
-            topologySpreadConstraints:
-              - maxSkew: 1
-                topologyKey: kubernetes.io/hostname
-                whenUnsatisfiable: DoNotSchedule
-                matchLabelKeys:
-                  - pod-template-hash
-                labelSelector:
-                  matchLabels:
-                    app.kubernetes.io/name: argocd-clusterprofile-controller
-            containers:
-              - name: argocd-clusterprofile-controller
-                imagePullPolicy: IfNotPresent
-  - target:
-      kind: NetworkPolicy
-      name: argocd-clusterprofile-controller-network-policy
-    patch: |-
-      apiVersion: networking.k8s.io/v1
-      kind: NetworkPolicy
-      metadata:
-        name: argocd-clusterprofile-controller-network-policy
-      spec:
-        ingress:
-          - from:
-              - namespaceSelector: {}
-              - ipBlock:
-                  cidr: ${control_plane_ip}/32
-            ports:
-              - protocol: TCP
-                port: 8080
-images:
-  - name: ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd
-    newName: ${E2E_IMAGE_REPOSITORY}
-    newTag: ${E2E_IMAGE_TAG}
-EOF
-  kubectl kustomize "${overlay}" --load-restrictor=LoadRestrictionsNone | \
-    kubectl --context "${HUB_CONTEXT}" apply -f -
-}
-
-for command in kind kubectl helm jq docker awk grep sed xargs timeout; do
+for command in kubectl helm jq docker awk grep sed xargs timeout; do
   require_command "${command}"
 done
-case "${E2E_INSTALL_METHOD}" in
-  helm | kustomize) ;;
-  *)
-    echo "E2E_INSTALL_METHOD must be helm or kustomize" >&2
-    exit 1
-    ;;
-esac
 
 validate_static_shapes
 
-log "creating a three-node kind cluster"
-KIND_IMAGE_ARGS=()
-if [ -n "${KIND_NODE_IMAGE}" ]; then
-  KIND_IMAGE_ARGS=(--image "${KIND_NODE_IMAGE}")
+log "reusing the live e2e hub for HA fault scenarios"
+if ! kubectl --context "${HUB_CONTEXT}" get namespace "${NAMESPACE}" >/dev/null; then
+  echo "parent e2e hub or namespace is unavailable: ${HUB_CONTEXT}/${NAMESPACE}" >&2
+  exit 1
 fi
-kind create cluster --name "${CLUSTER_NAME}" "${KIND_IMAGE_ARGS[@]}" \
-  --wait 120s --config=- <<'EOF'
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-nodes:
-  - role: control-plane
-  - role: worker
-  - role: worker
-EOF
-CLUSTER_CREATED=1
-
-kubectl --context "${HUB_CONTEXT}" label node -l '!node-role.kubernetes.io/control-plane' \
-  e2e.argoproj.io/ha-worker=true >/dev/null
-
-kind load docker-image "${E2E_IMG}" --name "${CLUSTER_NAME}"
-kubectl --context "${HUB_CONTEXT}" create namespace "${NAMESPACE}"
-apply_test_controller_config
-CLUSTERPROFILE_CRD_MANIFEST="$(
-  grep -o 'https://[^[:space:]]*clusterprofiles\.yaml' \
-    "${REPO_ROOT}/artifacts/manifests/base/kustomization.yaml"
+HA_NODE_SHAPE="$(
+  kubectl --context "${HUB_CONTEXT}" get nodes -o json | jq -c '{
+    total: (.items | length),
+    workers: ([.items[] |
+      select(.metadata.labels["node-role.kubernetes.io/control-plane"] == null) |
+      select(.metadata.labels["e2e.argoproj.io/ha-worker"] == "true")] | length)
+  }'
 )"
-kubectl --context "${HUB_CONTEXT}" apply -f "${CLUSTERPROFILE_CRD_MANIFEST}"
-
-log "installing the HA controller via ${E2E_INSTALL_METHOD}"
-install_controller
+if ! jq -e '.total == 3 and .workers == 2' <<<"${HA_NODE_SHAPE}" >/dev/null; then
+  echo "parent e2e hub does not have the required three-node HA shape: ${HA_NODE_SHAPE}" >&2
+  exit 1
+fi
 if ! test_controller_config_is_current; then
-  echo "HA test controller client limits were not preserved during installation" >&2
+  echo "HA test controller client limits were not preserved by the live e2e phase" >&2
   exit 1
 fi
 if ! retry_until 120 "two ready controller replicas" deployment_is_ready_with_replicas 2; then

@@ -72,7 +72,8 @@ with the committed `values.schema.json`.
 
 ## End-to-end testing
 
-`make e2e` installs the chart from the local checkout into a kind cluster and
-runs the full e2e scenario against it. The install method defaults to `helm`;
-set `E2E_INSTALL_METHOD=kustomize` to exercise the kustomize manifests under
-`artifacts/manifests` instead. CI runs both methods via a matrix.
+`make e2e` creates one three-node kind hub and one spoke, installs two spread
+controller replicas from the local checkout, and runs the full end-to-end test
+suite against that shared hub. The install method defaults to
+`helm`; set `E2E_INSTALL_METHOD=kustomize` to exercise the kustomize manifests
+under `artifacts/manifests` instead. CI runs both methods via a matrix.
