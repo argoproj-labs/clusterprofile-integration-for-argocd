@@ -54,12 +54,52 @@ sequenceDiagram
     participant ProviderFile as access providers file
     participant Secret as Argo CD cluster Secret
 
-    KubeAPI->>CPController: ClusterProfile add/update/delete event
-    CPController->>ProviderFile: Resolve matching provider by name
-    CPController->>CPController: Build Argo CD ClusterConfig
-    CPController->>Secret: Create or update data.name, data.server, data.config
+    KubeAPI->>CPController: ClusterProfile or owned Secret event
+    CPController->>CPController: Resolve advertised access
+    alt No access is advertised
+        CPController->>Secret: Delete with UID/resourceVersion preconditions
+    else Access is advertised
+        CPController->>ProviderFile: Resolve custom provider when required
+        alt Rendering succeeds
+            CPController->>Secret: Create or update with optimistic locking
+        else Rendering fails
+            CPController->>Secret: Retain last-known-good data or delete revoked data
+        end
+    end
     CPController-->>KubeAPI: Reconcile complete
 ```
+
+The Secret is created in the same namespace as the ClusterProfile, with a
+controller owner reference back to it. Its name preserves the readable
+`cluster-<ClusterProfile name>` mapping and falls back to a deterministic
+bounded name when that would exceed the Kubernetes metadata limit. The
+`argocd.argoproj.io/cluster-profile-origin` label records the source namespace
+and name, bounded to the label limit. These bounded encodings are
+collision-resistant rather than
+mathematically collision-free; owner references and provenance checks ensure
+that a collision is reported instead of overwriting another Secret. Garbage
+collection deletes the Secret when the ClusterProfile is deleted. The owner
+reference also lets the controller watch its Secrets, so out-of-band edits or
+deletions are reconciled back. See the README's "Namespace placement" section
+for how the ClusterProfile namespace selects the Argo CD instance.
+
+### Ownership and concurrency safety
+
+The controller mutates or deletes a persisted Secret only when its controller
+owner reference contains the exact UID of the current ClusterProfile. It does
+not adopt ownerless Secrets, overwrite Secrets controlled by another object, or
+reuse a Secret controlled by an earlier ClusterProfile with the same name.
+Those cases are reported as collisions for an operator to resolve.
+
+Updates use optimistic locking so a concurrent writer causes a conflict and a
+fresh reconcile instead of silently losing data. Deletions include both the
+Secret UID and `resourceVersion` as preconditions, which prevents a stale
+reconcile from deleting a replaced or concurrently updated Secret.
+
+The supported object model has no ClusterProfile finalizer, central or
+cross-namespace Secret, migration path, or adoption behavior. Normal cleanup is
+owned by Kubernetes garbage collection through the same-namespace owner
+reference.
 
 For a custom access provider, the controller:
 
@@ -77,14 +117,52 @@ The resulting cluster Secret contains:
 | --- | --- |
 | `data.name` | `ClusterProfile.metadata.name` |
 | `data.server` | Selected `AccessProvider.cluster.server` |
-| `data.config` | JSON-encoded Argo CD `ClusterConfig`, including TLS data and optional `execProviderConfig` |
+| `data.config` | JSON-encoded Argo CD `ClusterConfig`, including TLS, proxy, compression, and optional `execProviderConfig` data |
 
 The current implementation uses
 `access.Config.BuildConfigFromCP(clusterProfile)` from the Cluster Inventory API
 library to resolve the provider and build a client-go `rest.Config`. That
 `rest.Config` is an intermediate representation only. This controller does not
-use it to contact the registered cluster; it maps the resolved values into Argo
-CD's `ClusterConfig` JSON.
+use it to contact the registered cluster. It takes authentication material and
+the resolved exec configuration from that result, while the selected
+`AccessProvider.cluster` remains the source of truth for `server`,
+`certificate-authority-data`, `tls-server-name`, `insecure-skip-tls-verify`,
+`proxy-url`, and `disable-compression`. The controller maps those values into
+Argo CD's `ClusterConfig` JSON without relying on a potentially lossy
+`rest.Config` round trip.
+
+CA data is optional—client-go falls back to the runtime's trusted roots when it
+is omitted—and is mutually exclusive with `insecure-skip-tls-verify`, as in
+kubeconfig.
+
+### Access loss and last-known-good credentials
+
+A successful render records two versioned fingerprints as private annotations
+on the generated Secret. One covers the selected effective access provider; the
+other covers the exact labels and data written to the Secret. Unrelated
+annotations are not part of the managed payload and are preserved.
+
+These fingerprints make render failures fail safely without turning a local
+controller configuration outage into a mass cluster outage:
+
+| Reconcile state | Secret behavior |
+| --- | --- |
+| Neither `status.accessProviders` nor deprecated `status.credentialProviders` advertises access | Delete the Secret controlled by that exact ClusterProfile instance. |
+| Rendering succeeds | Create or update the exact payload and both fingerprints. |
+| Rendering fails, but the fingerprinted provider is still advertised and the persisted payload is unchanged | Keep the last-known-good credentials, reconcile the exact current ClusterProfile labels with an optimistic-lock patch, and return an error for retry and observability. |
+| Rendering fails after the provider or its cluster connection data changed | Delete the fingerprinted, exact-owned Secret with UID and resource-version preconditions, then return the render error. |
+| The payload fingerprint no longer matches | Preserve it conservatively because another authorized writer may have changed the payload without updating the annotations. |
+| An owned Secret has missing or unrecognized fingerprints | Preserve it conservatively on render failure; the next successful reconcile backfills the fingerprints. |
+
+`status.accessProviders` overrides a deprecated `status.credentialProviders`
+entry with the same name, matching Cluster Inventory API resolution. Provider
+list order, extension list order, JSON object key order, and insignificant JSON
+whitespace do not affect the provider fingerprints. ClusterProfile labels do
+not affect provider identity; they can therefore converge independently while
+credentials stay last-known-good. ClusterProfile status remains the
+authorization source: removing a provider from only the controller's local
+provider file is treated as a local outage while that provider is still
+advertised in status. To revoke access, remove or change the status entry.
 
 ## Runtime Authentication Flow
 
