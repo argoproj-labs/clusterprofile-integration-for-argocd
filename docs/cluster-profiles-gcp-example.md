@@ -149,7 +149,7 @@ kubectl config use-context gke_${GCP_PROJECT_ID}_${GCP_LOCATION}_hub
 
 ## 5. Create ApplicationSet
 
-At this point, the Cluster Profile and Secret should be generated (you may verify with `kubectl get clusterprofiles` and `kubectl get secrets`). Argo CD will use the built-in GCP provider to authenticate to the spoke cluster using Workload Identity.
+At this point, the Cluster Profile and Secret should be generated (you may verify with `kubectl get clusterprofiles` and `kubectl get secrets`). The Secret is created in the same namespace as the ClusterProfile — here the `argocd` namespace, where Argo CD reads its cluster Secrets. Argo CD will use the built-in GCP provider to authenticate to the spoke cluster using Workload Identity.
 
 With the cluster connection configured, create an `ApplicationSet`:
 ```bash

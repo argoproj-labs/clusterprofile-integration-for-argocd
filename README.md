@@ -43,6 +43,14 @@ These `ClusterProfile` resources may be synced automatically by a cluster manage
 
 When running as a standalone controller, it watches for `ClusterProfile` objects and generates `Secret`s for Argo CD. The generated `Secret`s are labeled with `argocd.argoproj.io/secret-type: cluster` and `argocd.argoproj.io/cluster-profile-origin`, and also include labels from the source `ClusterProfile`.
 
+### Namespace placement
+
+Argo CD reads cluster `Secret`s from its own namespace, so the namespace a `ClusterProfile` is created in decides which Argo CD instance sees the cluster. Whoever creates the `ClusterProfile` makes that decision: place a `ClusterProfile` in a namespace only if the Argo CD instance in that namespace is meant to manage the cluster.
+
+Because names only need to be unique within a namespace, one shared controller can watch several namespaces (see `--cluster-profile-namespaces`) and serve one Argo CD instance per team namespace — same-named `ClusterProfile`s in different namespaces never collide, and each instance sees exactly the `Secret`s mirrored into its namespace.
+
+Note that every namespace watched for `ClusterProfile`s is also a namespace the controller creates, updates, and deletes `Secret`s in, and the RBAC of both install methods reflects that: the Helm chart generates a `Role` per watched namespace (or a `ClusterRole` when watching all namespaces), and the kustomize manifests grant cluster-wide `Secret` write access to support `--cluster-profile-namespaces='*'`.
+
 
 ### Authentication
 
@@ -80,7 +88,7 @@ To provide this file to the controller, configure the `argocd-clusterprofile-con
 
 ### Deletion
 
-The controller adds a finalizer (`argoproj.io/cluster-profile-finalizer`) to the `ClusterProfile` object. When the `ClusterProfile` is deleted, the controller will clean up the corresponding `Secret`.
+Each generated `Secret` carries an owner reference to its `ClusterProfile`, so when the `ClusterProfile` is deleted, Kubernetes garbage collection removes the corresponding `Secret` automatically.
 
 ## Installation & Configuration
 

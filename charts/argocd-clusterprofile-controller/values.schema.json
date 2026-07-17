@@ -60,7 +60,7 @@
           }
         },
         "clusterProfileNamespaces": {
-          "description": "Namespaces to watch for ClusterProfile resources. Empty means the release namespace. Use `*` alone to watch all namespaces. When `rbac.create` is true, matching ClusterProfile RBAC is generated.",
+          "description": "Namespaces to watch for ClusterProfile resources. Empty means the release namespace. Use `*` alone to watch all namespaces. Generated Argo CD cluster Secrets are created in the same namespace as their source ClusterProfile, so when `rbac.create` is true, matching ClusterProfile and Secret RBAC is generated for every watched namespace.",
           "oneOf": [
             {
               "type": "array",

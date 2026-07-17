@@ -19,6 +19,7 @@ SECRETREADER_COMMAND="${SECRETREADER_COMMAND:-/plugins/secretreader/bin/secretre
 HUB_CLUSTER="${HUB_CLUSTER:-${E2E_PREFIX}-hub}"
 SPOKE_CLUSTER="${SPOKE_CLUSTER:-${E2E_PREFIX}-spoke}"
 ARGOCD_NS="${ARGOCD_NS:-argocd}"
+MIRROR_NS="team-a"
 APP_NAME="guestbook-spoke-cluster-full"
 CP_NAME="spoke-cluster-full"
 SECRET_NAME="cluster-${CP_NAME}"
@@ -61,6 +62,10 @@ dump_diagnostics() {
       kubectl --context "${ctx}" get events -A --sort-by=.lastTimestamp | tail -80
     fi
   done
+  if kubectl --context "kind-${HUB_CLUSTER}" get namespace "${MIRROR_NS}" >/dev/null 2>&1; then
+    log "mirror namespace state"
+    kubectl --context "kind-${HUB_CLUSTER}" -n "${MIRROR_NS}" get clusterprofiles,secrets -o wide
+  fi
   if kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" get pods >/dev/null 2>&1; then
     log "ClusterProfile controller logs"
     kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" logs deploy/argocd-clusterprofile-controller --tail=200
@@ -281,8 +286,13 @@ kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" create secret generic 
 }
 EOF
 
+log "creating mirror namespace ${MIRROR_NS}"
+kubectl --context "kind-${HUB_CLUSTER}" create namespace "${MIRROR_NS}"
+
 log "installing ClusterProfile controller via ${E2E_INSTALL_METHOD}"
 if [ "${E2E_INSTALL_METHOD}" = "kustomize" ]; then
+  kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" patch configmap argocd-cmd-params-cm --type merge \
+    -p "{\"data\":{\"clusterprofilecontroller.namespaces\":\"${ARGOCD_NS},${MIRROR_NS}\"}}"
   kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" apply -k artifacts/manifests
 else
   CLUSTERPROFILE_CRD_MANIFEST="$(grep -o 'https://[^[:space:]]*clusterprofiles\.yaml' artifacts/manifests/base/kustomization.yaml)"
@@ -293,6 +303,7 @@ else
     --set "image.repository=${E2E_IMG%:*}" \
     --set "image.tag=${E2E_IMG##*:}" \
     --set "controller.clusterProfileProvidersFile=/app/cp-creds/cp-creds.json" \
+    --set-json "controller.clusterProfileNamespaces=[\"${ARGOCD_NS}\",\"${MIRROR_NS}\"]" \
     --set-json 'controller.extraVolumes=[{"name":"cp-creds-vol","secret":{"secretName":"cp-creds-secret"}}]' \
     --set-json 'controller.extraVolumeMounts=[{"name":"cp-creds-vol","mountPath":"/app/cp-creds"}]' \
     --wait \
@@ -472,6 +483,55 @@ test "$(printf '%s' "${CONFIG}" | jq -r '.execProviderConfig.apiVersion')" = "cl
 test "$(printf '%s' "${CONFIG}" | jq -r '.execProviderConfig.provideClusterInfo')" = "true"
 test "$(printf '%s' "${CONFIG}" | jq -r '.execProviderConfig.config.clusterName')" = "${CP_NAME}"
 test "$(printf '%s' "${CONFIG}" | jq -r '.tlsClientConfig.caData | length')" -gt 100
+
+log "creating same-named ClusterProfile in ${MIRROR_NS}"
+kubectl --context "kind-${HUB_CLUSTER}" -n "${MIRROR_NS}" apply -f - <<EOF
+apiVersion: multicluster.x-k8s.io/v1alpha1
+kind: ClusterProfile
+metadata:
+  name: ${CP_NAME}
+  namespace: ${MIRROR_NS}
+  labels:
+    environment: e2e-mirror
+spec:
+  clusterManager:
+    name: manual
+  displayName: Mirror Namespace E2E
+EOF
+MIRROR_STATUS_PATCH="$(cat <<EOF
+{
+  "status": {
+    "accessProviders": [
+      {
+        "name": "argo-cd-builtin-gcp",
+        "cluster": {
+          "server": "https://mirror.example.com:6443"
+        }
+      }
+    ]
+  }
+}
+EOF
+)"
+kubectl --context "kind-${HUB_CLUSTER}" -n "${MIRROR_NS}" patch clusterprofile "${CP_NAME}" --subresource=status --type=merge \
+  -p "${MIRROR_STATUS_PATCH}"
+
+log "verifying the Secret is mirrored into ${MIRROR_NS}"
+kubectl --context "kind-${HUB_CLUSTER}" -n "${MIRROR_NS}" wait --for=jsonpath='{.metadata.labels.environment}'=e2e-mirror "secret/${SECRET_NAME}" --timeout=120s
+test "$(kubectl --context "kind-${HUB_CLUSTER}" -n "${MIRROR_NS}" get secret "${SECRET_NAME}" -o jsonpath='{.data.server}' | base64 -d)" = "https://mirror.example.com:6443"
+
+log "verifying the ${ARGOCD_NS} Secret was not clobbered by the same-named ClusterProfile"
+test "$(kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" get secret "${SECRET_NAME}" -o jsonpath='{.data.server}' | base64 -d)" = "https://${SPOKE_IP}:6443"
+
+log "verifying the mirrored Secret is garbage collected with its ClusterProfile"
+kubectl --context "kind-${HUB_CLUSTER}" -n "${MIRROR_NS}" delete clusterprofile "${CP_NAME}" --timeout=60s
+_mirror_secret_gone() {
+  ! kubectl --context "kind-${HUB_CLUSTER}" -n "${MIRROR_NS}" get secret "${SECRET_NAME}" >/dev/null 2>&1
+}
+if ! retry_until 120 "garbage collection of secret ${SECRET_NAME} in ${MIRROR_NS}" _mirror_secret_gone; then
+  echo "mirrored secret ${SECRET_NAME} in ${MIRROR_NS} was not garbage collected" >&2
+  exit 1
+fi
 
 log "creating ApplicationSet"
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" apply -f - <<EOF

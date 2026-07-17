@@ -117,7 +117,6 @@ func NewCommand() *cobra.Command {
 				Client:                     mgr.GetClient(),
 				Scheme:                     mgr.GetScheme(),
 				Log:                        ctrl.Log.WithName("controllers").WithName("ClusterProfile"),
-				Namespace:                  namespace,
 				ClusterProfileProviderFile: clusterProfileProviderFile,
 			}).SetupWithManager(mgr); err != nil {
 				log.Error(err, "unable to create controller", "controller", "ClusterProfile")
@@ -200,21 +199,21 @@ func buildCacheOptions(
 ) cache.Options {
 	namespaces := normalizeNamespaces(clusterProfileNamespaces)
 
-	clusterProfileNamespaceConfigs := map[string]cache.Config{}
+	namespaceConfigs := map[string]cache.Config{}
 	if !slices.Contains(namespaces, allNamespacesSentinel) {
 		if len(namespaces) == 0 {
 			namespaces = []string{controllerNamespace}
 		}
-		clusterProfileNamespaceConfigs = namespaceCacheConfigs(namespaces)
+		namespaceConfigs = namespaceCacheConfigs(namespaces)
 	}
 
 	return cache.Options{
 		ByObject: map[ctrlclient.Object]cache.ByObject{
 			&clusterv1alpha1.ClusterProfile{}: {
-				Namespaces: clusterProfileNamespaceConfigs,
+				Namespaces: namespaceConfigs,
 			},
 			&corev1.Secret{}: {
-				Namespaces: namespaceCacheConfigs([]string{controllerNamespace}),
+				Namespaces: namespaceConfigs,
 			},
 		},
 	}
