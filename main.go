@@ -1,16 +1,21 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"runtime/debug"
 	"slices"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -32,7 +37,62 @@ import (
 
 const (
 	cliName = "argocd-clusterprofile-controller"
+	// allNamespacesSentinel ("*") mirrors Argo CD's --application-namespaces and requests a cluster-wide watch.
+	allNamespacesSentinel = "*"
 )
+
+type cacheSyncReadiness struct {
+	ready atomic.Bool
+}
+
+// Start reports ready for as long as the manager runs, because non-leader-election runnables
+// start only after the cache has synced.
+func (r *cacheSyncReadiness) Start(ctx context.Context) error {
+	r.ready.Store(true)
+	defer r.ready.Store(false)
+	<-ctx.Done()
+	return nil
+}
+
+func (*cacheSyncReadiness) NeedLeaderElection() bool {
+	return false
+}
+
+func (r *cacheSyncReadiness) Check(_ *http.Request) error {
+	if !r.ready.Load() {
+		return fmt.Errorf("manager cache has not synced")
+	}
+	return nil
+}
+
+// registerCacheInformers registers an informer for every cached type. Controller sources acquire
+// informers lazily when they start, so registering up front is what keeps the cache-sync gate
+// from completing against an empty informer set.
+func registerCacheInformers(ctx context.Context, mgr ctrl.Manager, cacheOpt cache.Options) error {
+	for object := range cacheOpt.ByObject {
+		if _, err := mgr.GetCache().GetInformer(
+			ctx, object, cache.BlockUntilSynced(false),
+		); err != nil {
+			return fmt.Errorf("failed to register informer for %T: %w", object, err)
+		}
+	}
+	return nil
+}
+
+func buildRESTConfig(clientConfig clientcmd.ClientConfig) (*rest.Config, error) {
+	restConfig, err := clientConfig.ClientConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	vers := common.GetVersion()
+	restConfig.UserAgent = fmt.Sprintf("%s/%s (%s)", cliName, vers.Version, vers.Platform)
+	if err := appv1alpha1.SetK8SConfigDefaults(restConfig); err != nil {
+		return nil, err
+	}
+
+	return restConfig, nil
+}
 
 func NewCommand() *cobra.Command {
 	var (
@@ -81,29 +141,25 @@ func NewCommand() *cobra.Command {
 				}
 			}()
 
-			restConfig, err := clientConfig.ClientConfig()
+			restConfig, err := buildRESTConfig(clientConfig)
 			errors.CheckError(err)
 
-			restConfig.UserAgent = fmt.Sprintf("argocd-clusterprofile-controller/%s (%s)", vers.Version, vers.Platform)
-
 			cacheOpt := buildCacheOptions(namespace, clusterProfileNamespaces)
+			// Keep enough of the Pod termination grace period in reserve for the
+			// leader-election release request and process exit after runnables drain.
+			gracefulShutdownTimeout := 15 * time.Second
 
-			cfg := ctrl.GetConfigOrDie()
-			err = appv1alpha1.SetK8SConfigDefaults(cfg)
-			if err != nil {
-				log.Error(err, "Unable to apply K8s REST config defaults")
-				os.Exit(1)
-			}
-
-			mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+			mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 				Scheme: scheme,
 				Metrics: metricsserver.Options{
 					BindAddress: metricsAddr,
 				},
-				Cache:                  cacheOpt,
-				HealthProbeBindAddress: probeAddr,
-				LeaderElection:         enableLeaderElection,
-				LeaderElectionID:       "clusterprofile.argoproj.io",
+				Cache:                         cacheOpt,
+				HealthProbeBindAddress:        probeAddr,
+				LeaderElection:                enableLeaderElection,
+				LeaderElectionID:              "clusterprofile.argoproj.io",
+				LeaderElectionReleaseOnCancel: true,
+				GracefulShutdownTimeout:       &gracefulShutdownTimeout,
 				Client: ctrlclient.Options{
 					DryRun: &dryRun,
 				},
@@ -127,13 +183,23 @@ func NewCommand() *cobra.Command {
 				log.Error(err, "unable to set up health check")
 				os.Exit(1)
 			}
-			if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+			ctx := ctrl.SetupSignalHandler()
+			if err := registerCacheInformers(ctx, mgr, cacheOpt); err != nil {
+				log.Error(err, "unable to register cache informers")
+				os.Exit(1)
+			}
+			cacheReadiness := &cacheSyncReadiness{}
+			if err := mgr.Add(cacheReadiness); err != nil {
+				log.Error(err, "unable to register cache readiness signal")
+				os.Exit(1)
+			}
+			if err := mgr.AddReadyzCheck("cache-sync", cacheReadiness.Check); err != nil {
 				log.Error(err, "unable to set up ready check")
 				os.Exit(1)
 			}
 
 			log.Info("Starting manager")
-			if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+			if err := mgr.Start(ctx); err != nil {
 				log.Error(err, "problem running manager")
 				os.Exit(1)
 			}
@@ -190,20 +256,18 @@ func NewCommand() *cobra.Command {
 	return &command
 }
 
-// allNamespacesSentinel ("*") mirrors Argo CD's --application-namespaces and requests a cluster-wide watch.
-const allNamespacesSentinel = "*"
-
 func buildCacheOptions(
 	controllerNamespace string,
 	clusterProfileNamespaces []string,
 ) cache.Options {
 	namespaces := normalizeNamespaces(clusterProfileNamespaces)
+	if len(namespaces) == 0 {
+		namespaces = []string{controllerNamespace}
+	}
 
+	// An empty map means every namespace, so only the sentinel leaves it empty.
 	namespaceConfigs := map[string]cache.Config{}
 	if !slices.Contains(namespaces, allNamespacesSentinel) {
-		if len(namespaces) == 0 {
-			namespaces = []string{controllerNamespace}
-		}
 		namespaceConfigs = namespaceCacheConfigs(namespaces)
 	}
 

@@ -35,19 +35,44 @@ imagePullSecrets: []
 # -- Number of controller replicas.
 replicaCount: 1
 
+# @schema minimum:30; maximum:3600
+# -- Pod termination grace period in seconds.
+terminationGracePeriodSeconds: 30
+
+# @schema additionalProperties:false; oneOf:[{properties: {minAvailable: {not: {type: "null"}}, maxUnavailable: {type: "null"}}}, {properties: {minAvailable: {type: "null"}, maxUnavailable: {not: {type: "null"}}}}]
+podDisruptionBudget:
+  # @schema required
+  # -- Create a PodDisruptionBudget for the controller.
+  enabled: true
+  # @schema type:[integer, string, "null"]; oneOf:[{type: integer, minimum: 0}, {type: string, pattern: "^(100|[1-9]?[0-9])%$"}, {type: "null"}]
+  # -- Minimum number or percentage of controller Pods that must remain available. Set maxUnavailable to null when using this field.
+  minAvailable: null
+  # @schema type:[integer, string, "null"]; oneOf:[{type: integer, minimum: 0}, {type: string, pattern: "^(100|[1-9]?[0-9])%$"}, {type: "null"}]
+  # -- Maximum number or percentage of controller Pods that may be unavailable. Set minAvailable to null when using this field.
+  maxUnavailable: 1
+  # @schema required; enum:["", IfHealthyBudget, AlwaysAllow]
+  # -- Policy for evicting unhealthy Pods. Empty uses the Kubernetes default.
+  unhealthyPodEvictionPolicy: ""
+  # @schema required; additionalProperties:{"type":"string"}
+  # -- Extra labels for the PodDisruptionBudget.
+  labels: {}
+  # @schema required; additionalProperties:{"type":"string"}
+  # -- Extra annotations for the PodDisruptionBudget.
+  annotations: {}
+
 # @schema additionalProperties:false
 controller:
   # @schema required; minLength:1; maxLength:63; pattern:^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
   # -- Controller name string used as the component name and appended to the base fullname.
   name: clusterprofile-controller
   # @schema required; item:string
-  # -- Extra command-line arguments appended after the chart-managed arguments.
+  # -- Extra command-line arguments for the controller.
   args: []
   # @schema required
   # -- Path to a mounted ClusterProfile providers file.
   clusterProfileProvidersFile: ""
   # @schema required; uniqueItems:true; oneOf:[{type: array, items: {type: string, maxLength: 63, pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"}}, {type: array, minItems: 1, maxItems: 1, items: {type: string, enum: ["*"]}}]
-  # -- Namespaces to watch for ClusterProfile resources. Empty means the release namespace. Use `*` alone to watch all namespaces. Generated Argo CD cluster Secrets are created in the same namespace as their source ClusterProfile, so when `rbac.create` is true, matching ClusterProfile and Secret RBAC is generated for every watched namespace.
+  # -- Namespaces to watch for ClusterProfile resources. Empty means the release namespace. Use `*` alone to watch all namespaces. When `rbac.create` is true, the chart creates ClusterProfile and Secret permissions matching this watch scope.
   clusterProfileNamespaces: []
   # @schema required; minimum:1; maximum:65535
   # -- Metrics bind port passed to the controller.
@@ -55,9 +80,6 @@ controller:
   # @schema required; minimum:1; maximum:65535
   # -- Health probe container port.
   probePort: 8081
-  # @schema required
-  # -- Enable controller-runtime leader election.
-  enableLeaderElection: false
   # @schema required
   # -- Enable dry-run mode.
   dryRun: false
@@ -114,8 +136,14 @@ containerSecurityContext:
   seccompProfile:
     type: RuntimeDefault
 
+# @schema skipProperties:true
 # -- Resource requests and limits for the controller container.
-resources: {}
+resources:
+  limits:
+    memory: 256Mi
+  requests:
+    cpu: 10m
+    memory: 128Mi
 
 # @schema skipProperties:true; additionalProperties:{"type":"string"}
 # -- Node selector for the controller pod.
@@ -130,8 +158,13 @@ tolerations: []
 affinity: {}
 
 # @schema item:object
-# -- Topology spread constraints for the controller pod.
-topologySpreadConstraints: []
+# -- Topology spread constraints for the controller pods.
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    matchLabelKeys:
+      - pod-template-hash
 
 # @schema maxLength:253; pattern:^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
 # -- Priority class name for the controller pod.
@@ -156,7 +189,7 @@ serviceAccount:
 # @schema additionalProperties:false
 rbac:
   # @schema required
-  # -- Create namespaced RBAC resources for the controller.
+  # -- Create RBAC resources for the controller.
   create: true
 
 ## @section Networking
