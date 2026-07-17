@@ -9,6 +9,11 @@ IMG ?= $(IMAGE_REPOSITORY)/$(IMAGE_NAME):$(IMAGE_TAG)
 # E2E settings
 E2E_INSTALL_METHOD?=helm
 
+# Generated install manifest settings
+KUSTOMIZE ?= kubectl kustomize
+KUSTOMIZE_ROOT := artifacts/manifests
+INSTALL_MANIFEST := $(KUSTOMIZE_ROOT)/install.yaml
+
 # Helm tooling settings
 HELM_CHART_DIRS := $(shell find charts -mindepth 1 -maxdepth 1 -type d -exec test -f '{}/Chart.yaml' ';' -print | sort)
 HELM_VALUES_SCHEMA_CHART := charts/argocd-clusterprofile-controller
@@ -36,7 +41,21 @@ help: ## Display this help.
 ##@ Development
 
 .PHONY: manifests
-manifests: ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
+manifests: ## Generate the consolidated install manifest from the Kustomize sources.
+	@set -e; \
+	tmp=$$(mktemp "$(KUSTOMIZE_ROOT)/.install.yaml.tmp.XXXXXX"); \
+	trap 'rm -f "$$tmp"' EXIT; \
+	$(KUSTOMIZE) $(KUSTOMIZE_ROOT) >"$$tmp"; \
+	chmod 0644 "$$tmp"; \
+	mv "$$tmp" $(INSTALL_MANIFEST)
+
+.PHONY: validate-manifests
+validate-manifests: ## Verify the consolidated install manifest is up to date.
+	@set -e; \
+	tmp=$$(mktemp); \
+	trap 'rm -f "$$tmp"' EXIT; \
+	$(KUSTOMIZE) $(KUSTOMIZE_ROOT) >"$$tmp"; \
+	diff -u $(INSTALL_MANIFEST) "$$tmp"
 
 .PHONY: generate
 generate: ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
