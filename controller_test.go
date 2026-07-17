@@ -40,7 +40,6 @@ const (
 	testNamespace            = "default"
 	testServer               = "https://test-cluster.example.com"
 	testSecretName           = "cluster-test-cluster"
-	testOriginLabelValue     = "default-test-cluster"
 	testProviderName         = "secretreader"
 	testProviderCommand      = "/plugins/secretreader/bin/secretreader-plugin"
 	unconfiguredProviderName = "not-configured"
@@ -176,7 +175,7 @@ func newControlledSecret(
 			UID:             uid,
 			ResourceVersion: "42",
 			Labels: map[string]string{
-				clusterProfileOriginLabel: clusterProfile.Namespace + "-" + clusterProfile.Name,
+				clusterProfileNameKey:     clusterProfile.Name,
 				common.LabelKeySecretType: common.LabelValueSecretTypeCluster,
 			},
 			OwnerReferences: []metav1.OwnerReference{
@@ -444,21 +443,18 @@ func TestCacheSyncReadiness(t *testing.T) {
 }
 
 func TestGeneratedClusterProfileMetadata(t *testing.T) {
-	t.Run("preserves origin labels at the raw limit and bounds the next byte", func(t *testing.T) {
+	t.Run("preserves name labels at the raw limit and bounds the next byte", func(t *testing.T) {
 		atLimit := &clusterinventory.ClusterProfile{ObjectMeta: metav1.ObjectMeta{
-			Namespace: argocdNamespace,
-			Name:      strings.Repeat("a", content.LabelValueMaxLength-len(argocdNamespace)-1),
+			Name: strings.Repeat("a", content.LabelValueMaxLength),
 		}}
 		overLimit := atLimit.DeepCopy()
 		overLimit.Name += "a"
 
-		assert.Len(t, unboundedClusterProfileOrigin(atLimit), content.LabelValueMaxLength)
-		assert.Len(t, unboundedClusterProfileOrigin(overLimit), content.LabelValueMaxLength+1)
-		assert.Equal(t, unboundedClusterProfileOrigin(atLimit), clusterProfileOrigin(atLimit))
-		bounded := clusterProfileOrigin(overLimit)
+		assert.Equal(t, atLimit.Name, clusterProfileNameLabelValue(atLimit))
+		bounded := clusterProfileNameLabelValue(overLimit)
 		assert.Len(t, bounded, content.LabelValueMaxLength)
 		assert.Empty(t, content.IsLabelValue(bounded))
-		assert.Equal(t, bounded, clusterProfileOrigin(overLimit))
+		assert.Equal(t, bounded, clusterProfileNameLabelValue(overLimit))
 	})
 
 	t.Run("preserves Secret names at the raw limit and bounds longer valid profiles", func(t *testing.T) {
@@ -483,19 +479,18 @@ func TestGeneratedClusterProfileMetadata(t *testing.T) {
 	})
 
 	t.Run("keeps bounded values valid when truncation lands on punctuation", func(t *testing.T) {
-		originProfile := &clusterinventory.ClusterProfile{ObjectMeta: metav1.ObjectMeta{
-			Namespace: strings.Repeat("a", 29),
-			Name:      strings.Repeat("b", 40),
+		nameProfile := &clusterinventory.ClusterProfile{ObjectMeta: metav1.ObjectMeta{
+			Name: strings.Repeat("a", 29) + "-" + strings.Repeat("b", 40),
 		}}
 		secretProfile := &clusterinventory.ClusterProfile{ObjectMeta: metav1.ObjectMeta{
 			Name: strings.Repeat("a", 211) + "." + strings.Repeat("b", 34),
 		}}
 
-		origin := clusterProfileOrigin(originProfile)
+		labelValue := clusterProfileNameLabelValue(nameProfile)
 		secretName := clusterProfileSecretName(secretProfile)
-		assert.Empty(t, content.IsLabelValue(origin))
+		assert.Empty(t, content.IsLabelValue(labelValue))
 		assert.Empty(t, content.IsDNS1123Subdomain(secretName))
-		assert.NotContains(t, origin, "--")
+		assert.NotContains(t, labelValue, "-_")
 		assert.NotContains(t, secretName, ".-")
 	})
 
@@ -505,9 +500,7 @@ func TestGeneratedClusterProfileMetadata(t *testing.T) {
 		second := &clusterinventory.ClusterProfile{ObjectMeta: metav1.ObjectMeta{Name: prefix + "c"}}
 
 		assert.NotEqual(t, clusterProfileSecretName(first), clusterProfileSecretName(second))
-		first.Namespace = argocdNamespace
-		second.Namespace = argocdNamespace
-		assert.NotEqual(t, clusterProfileOrigin(first), clusterProfileOrigin(second))
+		assert.NotEqual(t, clusterProfileNameLabelValue(first), clusterProfileNameLabelValue(second))
 	})
 
 	t.Run("keeps bounded encodings disjoint from every raw encoding", func(t *testing.T) {
@@ -528,35 +521,32 @@ func TestGeneratedClusterProfileMetadata(t *testing.T) {
 		assert.NotRegexp(t, `^cluster-`, clusterProfileSecretName(longSecretProfile))
 		assert.Regexp(t, `^cluster-`, clusterProfileSecretName(rawSecretCollisionProfile))
 
-		longOriginProfile := &clusterinventory.ClusterProfile{ObjectMeta: metav1.ObjectMeta{
-			Namespace: argocdNamespace,
-			Name:      strings.Repeat("l", 57),
+		longNameProfile := &clusterinventory.ClusterProfile{ObjectMeta: metav1.ObjectMeta{
+			Name: strings.Repeat("l", 64),
 		}}
-		previousBoundedOrigin := "argocd-" + strings.Repeat("l", 23) +
-			"-9871bc949027d95801152a5446ace48f"
-		rawOriginCollisionProfile := &clusterinventory.ClusterProfile{ObjectMeta: metav1.ObjectMeta{
-			Namespace: argocdNamespace,
-			Name:      strings.TrimPrefix(previousBoundedOrigin, argocdNamespace+"-"),
+		rawNameCollisionProfile := &clusterinventory.ClusterProfile{ObjectMeta: metav1.ObjectMeta{
+			Name: strings.Repeat("l", 30) + "-6714e95219c67c4cda7eeff21b662ca5",
 		}}
-		assert.Equal(t, previousBoundedOrigin, unboundedClusterProfileOrigin(rawOriginCollisionProfile))
+		assert.Equal(t, rawNameCollisionProfile.Name, clusterProfileNameLabelValue(rawNameCollisionProfile))
 		assert.Equal(t,
-			"argocd-"+strings.Repeat("l", 23)+"_9871bc949027d95801152a5446ace48f",
-			clusterProfileOrigin(longOriginProfile),
+			strings.Repeat("l", 30)+"_6714e95219c67c4cda7eeff21b662ca5",
+			clusterProfileNameLabelValue(longNameProfile),
 		)
-		assert.NotEqual(t, clusterProfileOrigin(longOriginProfile), clusterProfileOrigin(rawOriginCollisionProfile))
-		assert.Contains(t, clusterProfileOrigin(longOriginProfile), "_")
-		assert.NotContains(t, clusterProfileOrigin(rawOriginCollisionProfile), "_")
+		assert.NotEqual(t,
+			clusterProfileNameLabelValue(longNameProfile),
+			clusterProfileNameLabelValue(rawNameCollisionProfile),
+		)
+		assert.Contains(t, clusterProfileNameLabelValue(longNameProfile), "_")
+		assert.NotContains(t, clusterProfileNameLabelValue(rawNameCollisionProfile), "_")
 	})
 
 	t.Run("retains short metadata values verbatim", func(t *testing.T) {
 		clusterProfile := &clusterinventory.ClusterProfile{ObjectMeta: metav1.ObjectMeta{
-			Namespace: testNamespace,
-			Name:      testClusterName,
+			Name: testClusterName,
 		}}
 
 		assert.Equal(t, testSecretName, clusterProfileSecretName(clusterProfile))
-		assert.Equal(t, testOriginLabelValue, clusterProfileOrigin(clusterProfile))
-		assert.Equal(t, testOriginLabelValue, unboundedClusterProfileOrigin(clusterProfile))
+		assert.Equal(t, testClusterName, clusterProfileNameLabelValue(clusterProfile))
 	})
 }
 
@@ -586,6 +576,7 @@ func TestLongClusterProfileSecretLifecycle(t *testing.T) {
 	}, createdSecret))
 	assert.True(t, metav1.IsControlledBy(createdSecret, clusterProfile))
 	assert.Equal(t, clusterProfile.Name, string(createdSecret.Data[secretDataNameKey]))
+	assert.Equal(t, clusterProfile.Name, createdSecret.Annotations[clusterProfileNameKey])
 
 	storedProfile := &clusterinventory.ClusterProfile{}
 	require.NoError(t, r.Get(context.Background(), req.NamespacedName, storedProfile))
@@ -852,7 +843,7 @@ func TestRenderFailureRevocation(t *testing.T) {
 		assert.Equal(t, platformTeamValue, updated.Labels[teamLabel])
 		assert.NotContains(t, updated.Labels, "obsolete")
 		assert.Equal(t, common.LabelValueSecretTypeCluster, updated.Labels[common.LabelKeySecretType])
-		assert.Equal(t, testOriginLabelValue, updated.Labels[clusterProfileOriginLabel])
+		assert.Equal(t, testClusterName, updated.Labels[clusterProfileNameKey])
 		assert.Equal(t, trueValue, updated.Annotations["example.com/retained"])
 		assert.Equal(t, originalProviderFingerprint,
 			updated.Annotations[secretAccessProviderFingerprintAnnotation])
@@ -1090,7 +1081,8 @@ func TestClusterProfileReconciler(t *testing.T) {
 				clusterProfileOwnerReference(testClusterName, ""),
 			}, secret.OwnerReferences)
 			assert.Equal(t, "cluster", secret.Labels["argocd.argoproj.io/secret-type"])
-			assert.Equal(t, testOriginLabelValue, secret.Labels["argocd.argoproj.io/cluster-profile-origin"])
+			assert.Equal(t, testClusterName, secret.Labels["argocd.argoproj.io/cluster-profile-name"])
+			assert.Equal(t, testClusterName, secret.Annotations["argocd.argoproj.io/cluster-profile-name"])
 			assert.Equal(t, testClusterName, string(secret.Data[secretDataNameKey]))
 			assert.Equal(t, testServer, string(secret.Data[secretDataServerKey]))
 
@@ -1237,13 +1229,13 @@ func TestClusterProfileReconciler(t *testing.T) {
 			assert.Equal(t, productionValue, secret.Labels[environmentLabel])
 			assert.Equal(t, platformTeamValue, secret.Labels[teamLabel])
 			assert.Equal(t, common.LabelValueSecretTypeCluster, secret.Labels[common.LabelKeySecretType])
-			assert.Equal(t, testOriginLabelValue, secret.Labels[clusterProfileOriginLabel])
+			assert.Equal(t, testClusterName, secret.Labels[clusterProfileNameKey])
 		})
 
 		t.Run("should protect controller-owned secret labels from ClusterProfile labels", func(t *testing.T) {
 			clusterProfile := newBuiltinProviderClusterProfile(map[string]string{
 				common.LabelKeySecretType: "not-cluster",
-				clusterProfileOriginLabel: "other-origin",
+				clusterProfileNameKey:     "other-name",
 				environmentLabel:          productionValue,
 			})
 			r := &ClusterProfileReconciler{
@@ -1266,7 +1258,7 @@ func TestClusterProfileReconciler(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, productionValue, secret.Labels[environmentLabel])
 			assert.Equal(t, common.LabelValueSecretTypeCluster, secret.Labels[common.LabelKeySecretType])
-			assert.Equal(t, testOriginLabelValue, secret.Labels[clusterProfileOriginLabel])
+			assert.Equal(t, testClusterName, secret.Labels[clusterProfileNameKey])
 		})
 
 		t.Run("should update secret labels when ClusterProfile labels change", func(t *testing.T) {
@@ -1307,7 +1299,7 @@ func TestClusterProfileReconciler(t *testing.T) {
 			assert.Equal(t, productionValue, secret.Labels[environmentLabel])
 			assert.NotContains(t, secret.Labels, teamLabel)
 			assert.Equal(t, common.LabelValueSecretTypeCluster, secret.Labels[common.LabelKeySecretType])
-			assert.Equal(t, testOriginLabelValue, secret.Labels[clusterProfileOriginLabel])
+			assert.Equal(t, testClusterName, secret.Labels[clusterProfileNameKey])
 		})
 
 		t.Run("should update the secret when the ClusterProfile is updated", func(t *testing.T) {
@@ -1423,14 +1415,14 @@ func TestClusterProfileReconciler(t *testing.T) {
 				{
 					name: "generated-looking labels without an owner",
 					secretLabels: map[string]string{
-						clusterProfileOriginLabel: argocdNamespace + "-" + testClusterName,
+						clusterProfileNameKey:     testClusterName,
 						common.LabelKeySecretType: common.LabelValueSecretTypeCluster,
 					},
 				},
 				{
 					name: "matching owner identity with a stale UID",
 					secretLabels: map[string]string{
-						clusterProfileOriginLabel: argocdNamespace + "-" + testClusterName,
+						clusterProfileNameKey:     testClusterName,
 						common.LabelKeySecretType: common.LabelValueSecretTypeCluster,
 					},
 					secretOwnerReferences: []metav1.OwnerReference{
@@ -1531,11 +1523,7 @@ func TestClusterProfileReconciler(t *testing.T) {
 			)
 			assert.Equal(t, secret.UID, repairedSecret.UID)
 			assert.Equal(t, common.LabelValueSecretTypeCluster, repairedSecret.Labels[common.LabelKeySecretType])
-			assert.Equal(
-				t,
-				argocdNamespace+"-"+testClusterName,
-				repairedSecret.Labels[clusterProfileOriginLabel],
-			)
+			assert.Equal(t, testClusterName, repairedSecret.Labels[clusterProfileNameKey])
 			assert.NotContains(t, repairedSecret.Labels, "app.example.com/stale")
 			config := requireExactTestClusterSecretData(t, &repairedSecret)
 			require.NotNil(t, config.ExecProviderConfig)
@@ -1849,7 +1837,7 @@ func TestClusterProfileReconciler(t *testing.T) {
 				t,
 				r.Get(context.Background(), types.NamespacedName{Name: testSecretName, Namespace: teamANamespace}, &secretA),
 			)
-			assert.Equal(t, "team-a-test-cluster", secretA.Labels[clusterProfileOriginLabel])
+			assert.Equal(t, testClusterName, secretA.Labels[clusterProfileNameKey])
 			assert.Equal(t, testServer, string(secretA.Data[secretDataServerKey]))
 			require.Len(t, secretA.OwnerReferences, 1)
 			assert.Equal(t, types.UID("uid-team-a"), secretA.OwnerReferences[0].UID)
@@ -1859,7 +1847,7 @@ func TestClusterProfileReconciler(t *testing.T) {
 				t,
 				r.Get(context.Background(), types.NamespacedName{Name: testSecretName, Namespace: teamBNamespace}, &secretB),
 			)
-			assert.Equal(t, "team-b-test-cluster", secretB.Labels[clusterProfileOriginLabel])
+			assert.Equal(t, testClusterName, secretB.Labels[clusterProfileNameKey])
 			assert.Equal(t, "https://team-b.example.com", string(secretB.Data[secretDataServerKey]))
 			require.Len(t, secretB.OwnerReferences, 1)
 			assert.Equal(t, types.UID("uid-team-b"), secretB.OwnerReferences[0].UID)

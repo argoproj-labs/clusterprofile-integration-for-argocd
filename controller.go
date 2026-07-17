@@ -36,11 +36,13 @@ const (
 	boundedSecretNamePrefix = "clusterprofile-"
 	// generatedMetadataHashLength is 128 bits of a SHA-256 digest, hex-encoded.
 	generatedMetadataHashLength = 32
-	// clusterProfileOriginLabel is the label used to identify the ClusterProfile that a Secret was created from.
-	clusterProfileOriginLabel = "argocd.argoproj.io/cluster-profile-origin"
-	secretDataNameKey         = "name"
-	secretDataServerKey       = "server"
-	secretDataConfigKey       = "config"
+	// clusterProfileNameKey identifies the ClusterProfile that a Secret was created
+	// from. The label value is bounded for the label value limit; the annotation
+	// with the same key always carries the full name.
+	clusterProfileNameKey = "argocd.argoproj.io/cluster-profile-name"
+	secretDataNameKey     = "name"
+	secretDataServerKey   = "server"
+	secretDataConfigKey   = "config"
 	// Fingerprint annotations stamped on successful renders; see handleOwnedSecretAfterRenderFailure.
 	secretAccessProviderFingerprintAnnotation = "argocd.argoproj.io/cluster-profile-access-provider-fingerprint"
 	secretPayloadFingerprintAnnotation        = "argocd.argoproj.io/cluster-profile-secret-payload-fingerprint"
@@ -432,8 +434,9 @@ func (r *ClusterProfileReconciler) mutateSecret(
 	secret.Data = rendered.data
 	secret.StringData = nil
 	if secret.Annotations == nil {
-		secret.Annotations = make(map[string]string, 2)
+		secret.Annotations = make(map[string]string, 3)
 	}
+	secret.Annotations[clusterProfileNameKey] = clusterProfile.Name
 	secret.Annotations[secretAccessProviderFingerprintAnnotation] = rendered.accessProviderFingerprint
 	secret.Annotations[secretPayloadFingerprintAnnotation] = rendered.payloadFingerprint
 	return nil
@@ -445,7 +448,7 @@ func generatedSecretLabels(clusterProfile *clusterinventory.ClusterProfile) map[
 		labels[key] = value
 	}
 	labels[common.LabelKeySecretType] = common.LabelValueSecretTypeCluster
-	labels[clusterProfileOriginLabel] = clusterProfileOrigin(clusterProfile)
+	labels[clusterProfileNameKey] = clusterProfileNameLabelValue(clusterProfile)
 	return labels
 }
 
@@ -572,25 +575,21 @@ func clusterProfileSecretName(clusterProfile *clusterinventory.ClusterProfile) s
 	)
 }
 
-func clusterProfileOrigin(clusterProfile *clusterinventory.ClusterProfile) string {
-	rawOrigin := unboundedClusterProfileOrigin(clusterProfile)
-	if len(rawOrigin) <= content.LabelValueMaxLength {
-		return rawOrigin
+func clusterProfileNameLabelValue(clusterProfile *clusterinventory.ClusterProfile) string {
+	if len(clusterProfile.Name) <= content.LabelValueMaxLength {
+		return clusterProfile.Name
 	}
 
 	// Kubernetes names cannot contain underscores, so the internal marker makes
-	// the bounded representation disjoint from every raw namespace-name value.
+	// the bounded representation disjoint from every raw name.
 	return boundedMetadataValue(
-		rawOrigin,
-		clusterProfile.Namespace+"/"+clusterProfile.Name,
+		clusterProfile.Name,
+		clusterProfile.Name,
 		content.LabelValueMaxLength,
 		"_",
 	)
 }
 
-func unboundedClusterProfileOrigin(clusterProfile *clusterinventory.ClusterProfile) string {
-	return fmt.Sprintf("%s-%s", clusterProfile.Namespace, clusterProfile.Name)
-}
 // boundedMetadataValue retains a readable prefix and 128 bits of digest. The
 // representation is collision-resistant, while provenance checks remain the
 // authoritative protection against overwriting an existing Secret.

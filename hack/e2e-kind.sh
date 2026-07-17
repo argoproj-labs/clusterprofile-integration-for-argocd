@@ -32,12 +32,7 @@ SECRET_NAME="cluster-${CP_NAME}"
 COLLISION_CP_NAME="provenance-collision"
 COLLISION_SECRET_NAME="cluster-${COLLISION_CP_NAME}"
 COLLISION_SERVER="https://manual-collision.example.com:6443"
-LONG_LABEL_CP_NAME_LENGTH=$((63 - ${#ARGOCD_NS}))
-if [ "${LONG_LABEL_CP_NAME_LENGTH}" -lt 1 ]; then
-  LONG_LABEL_CP_NAME_LENGTH=1
-fi
-printf -v LONG_LABEL_CP_NAME '%*s' "${LONG_LABEL_CP_NAME_LENGTH}" ''
-LONG_LABEL_CP_NAME="${LONG_LABEL_CP_NAME// /l}"
+LONG_LABEL_CP_NAME="$(printf 'l%.0s' {1..64})"
 LONG_SECRET_CP_NAME="$(printf 's%.0s' {1..246})"
 MAX_LENGTH_CP_NAME="$(printf 'm%.0s' {1..253})"
 RAW_COLLISION_CP_NAME="$(printf 's%.0s' {1..212})-c487d7cd89959dbc1df6f5deec5584b5"
@@ -224,10 +219,10 @@ remote_only_fixture_is_reconciled() {
   )" || return 1
   jq -e \
     --arg name "${REMOTE_ONLY_CP_NAME}" \
-    --arg origin "${MIRROR_NS}-${REMOTE_ONLY_CP_NAME}" \
     --arg server "${REMOTE_ONLY_SERVER}" \
     --arg uid "${REMOTE_ONLY_CP_UID}" \
-    '.metadata.labels["argocd.argoproj.io/cluster-profile-origin"] == $origin and
+    '.metadata.labels["argocd.argoproj.io/cluster-profile-name"] == $name and
+     .metadata.annotations["argocd.argoproj.io/cluster-profile-name"] == $name and
      (.data.server | @base64d) == $server and
      any(.metadata.ownerReferences[]?;
        .apiVersion == "multicluster.x-k8s.io/v1alpha1" and
@@ -491,7 +486,8 @@ long_name_secret_is_ready() {
     --arg profile_uid "${profile_uid}" \
     --arg server "${server}" \
     '(.metadata.name | length) <= 253 and
-     (.metadata.labels["argocd.argoproj.io/cluster-profile-origin"] | length) <= 63 and
+     (.metadata.labels["argocd.argoproj.io/cluster-profile-name"] | length) <= 63 and
+     .metadata.annotations["argocd.argoproj.io/cluster-profile-name"] == $profile_name and
      .metadata.labels["argocd.argoproj.io/secret-type"] == "cluster" and
      (.data.name | @base64d) == $profile_name and
      (.data.server | @base64d) == $server and
@@ -1749,7 +1745,7 @@ LONG_SECRET_CP_UID="$(clusterprofile_uid "${ARGOCD_NS}" "${LONG_SECRET_CP_NAME}"
 MAX_LENGTH_CP_UID="$(clusterprofile_uid "${ARGOCD_NS}" "${MAX_LENGTH_CP_NAME}")"
 RAW_COLLISION_CP_UID="$(clusterprofile_uid "${ARGOCD_NS}" "${RAW_COLLISION_CP_NAME}")"
 
-if ! retry_until 120 "origin-label overflow boundary Secret" \
+if ! retry_until 120 "name-label overflow boundary Secret" \
   long_name_secret_is_ready "${LONG_LABEL_CP_NAME}" "${LONG_LABEL_CP_UID}" "${LONG_LABEL_SERVER}"; then
   echo "controller did not create a valid Secret for the label-overflow boundary" >&2
   exit 1
@@ -1779,14 +1775,18 @@ LONG_SECRET_NAME="$(jq -r '.metadata.name' <<<"${LONG_SECRET_JSON}")"
 MAX_LENGTH_SECRET_NAME="$(jq -r '.metadata.name' <<<"${MAX_LENGTH_SECRET_JSON}")"
 RAW_COLLISION_SECRET_NAME="$(jq -r '.metadata.name' <<<"${RAW_COLLISION_SECRET_JSON}")"
 LONG_SECRET_UID="$(jq -r '.metadata.uid' <<<"${LONG_SECRET_JSON}")"
-LONG_LABEL_ORIGIN="$(
-  jq -r '.metadata.labels["argocd.argoproj.io/cluster-profile-origin"]' <<<"${LONG_LABEL_SECRET_JSON}"
+LONG_NAME_LABEL="$(
+  jq -r '.metadata.labels["argocd.argoproj.io/cluster-profile-name"]' <<<"${LONG_LABEL_SECRET_JSON}"
+)"
+LONG_NAME_ANNOTATION="$(
+  jq -r '.metadata.annotations["argocd.argoproj.io/cluster-profile-name"]' <<<"${LONG_LABEL_SECRET_JSON}"
 )"
 
 test "${LONG_LABEL_SECRET_NAME}" = "cluster-${LONG_LABEL_CP_NAME}"
-test "${#LONG_LABEL_ORIGIN}" -le 63
-test "${LONG_LABEL_ORIGIN}" != "${ARGOCD_NS}-${LONG_LABEL_CP_NAME}"
-test "${LONG_LABEL_ORIGIN#*_}" != "${LONG_LABEL_ORIGIN}"
+test "${#LONG_NAME_LABEL}" -le 63
+test "${LONG_NAME_LABEL}" != "${LONG_LABEL_CP_NAME}"
+test "${LONG_NAME_LABEL#*_}" != "${LONG_NAME_LABEL}"
+test "${LONG_NAME_ANNOTATION}" = "${LONG_LABEL_CP_NAME}"
 test "${LONG_SECRET_NAME#cluster-}" = "${LONG_SECRET_NAME}"
 test "${MAX_LENGTH_SECRET_NAME}" != "cluster-${MAX_LENGTH_CP_NAME}"
 test "${RAW_COLLISION_SECRET_NAME}" = "${EXPECTED_RAW_COLLISION_SECRET_NAME}"
@@ -1859,7 +1859,8 @@ SECRET_JSON="$(kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" get sec
 CONFIG="$(printf '%s' "${SECRET_JSON}" | jq -r '.data.config' | base64 -d)"
 
 test "$(printf '%s' "${SECRET_JSON}" | jq -r '.metadata.labels["argocd.argoproj.io/secret-type"]')" = "cluster"
-test "$(printf '%s' "${SECRET_JSON}" | jq -r '.metadata.labels["argocd.argoproj.io/cluster-profile-origin"]')" = "${ARGOCD_NS}-${CP_NAME}"
+test "$(printf '%s' "${SECRET_JSON}" | jq -r '.metadata.labels["argocd.argoproj.io/cluster-profile-name"]')" = "${CP_NAME}"
+test "$(printf '%s' "${SECRET_JSON}" | jq -r '.metadata.annotations["argocd.argoproj.io/cluster-profile-name"]')" = "${CP_NAME}"
 test "$(printf '%s' "${SECRET_JSON}" | jq -r '.metadata.labels.environment')" = "e2e"
 test "$(printf '%s' "${SECRET_JSON}" | jq -r '.metadata.labels.team')" = "platform"
 test "$(printf '%s' "${SECRET_JSON}" | jq -r '.data.server' | base64 -d)" = "https://${SPOKE_IP}:6443"
