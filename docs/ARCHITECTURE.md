@@ -73,9 +73,10 @@ The Secret is created in the same namespace as the ClusterProfile, with a
 controller owner reference back to it. Its name preserves the readable
 `cluster-<ClusterProfile name>` mapping and falls back to a deterministic
 bounded name when that would exceed the Kubernetes metadata limit. The
-`argocd.argoproj.io/cluster-profile-origin` label records the source namespace
-and name, bounded to the label limit. These bounded encodings are
-collision-resistant rather than
+`argocd.argoproj.io/cluster-profile-name` label records the source name, bounded
+to the label limit, while the annotation with the same key always carries the
+full name, so it remains available even when the label is bounded. These
+bounded encodings are collision-resistant rather than
 mathematically collision-free; owner references and provenance checks ensure
 that a collision is reported instead of overwriting another Secret. Garbage
 collection deletes the Secret when the ClusterProfile is deleted. The owner
