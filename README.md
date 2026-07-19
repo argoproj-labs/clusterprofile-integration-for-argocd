@@ -94,22 +94,18 @@ The Cluster Profile controller reads this file, finds an access provider whose n
 
 To provide this file to the controller, configure the `argocd-clusterprofile-controller` with the `--clusterprofile-provider-file` argument (or `ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTERPROFILE_PROVIDER_FILE` environment variable) and mount the file through a Secret or ConfigMap. The plugin binary must be available at the same path to the Argo CD components that use the resulting cluster Secrets; see the [architecture](docs/ARCHITECTURE.md) and [kind cluster example](docs/cluster-profiles-kind-example.md).
 
-### Deletion
+### Secret lifecycle
 
 Each generated `Secret` carries an owner reference to its `ClusterProfile`, so when the `ClusterProfile` is deleted, Kubernetes garbage collection removes the corresponding `Secret` automatically.
 
-The controller also removes its exact-owned `Secret` when the ClusterProfile no
-longer advertises an access provider. If rendering temporarily fails while the
-same provider is still advertised—for example, because the controller's local
-providers file is unavailable—the last successfully fingerprinted Secret is
-kept and the reconcile returns an error. ClusterProfile label changes still
-converge without re-rendering credentials, so ApplicationSet selection does not
-remain stale. Changing the advertised provider or cluster connection data
-invalidates the last-known-good Secret, provided its persisted payload still
-matches the successful render fingerprint. An unrecognized or mismatched
-fingerprint is retained conservatively because the controller cannot prove that
-the persisted payload is safe to revoke. See
-the [architecture](docs/ARCHITECTURE.md) for the complete failure-state behavior.
+The controller also removes the `Secret` it owns when the `ClusterProfile`
+stops advertising all access providers. If the controller cannot generate a
+`Secret` from the current `ClusterProfile` and access provider configuration,
+it keeps the existing controller-generated `Secret`. It deletes that `Secret`
+only when it can safely determine that the `ClusterProfile` no longer
+advertises the provider from which it was generated. See the
+[architecture](docs/ARCHITECTURE.md#access-loss-and-last-known-good-credentials)
+for detailed failure behavior.
 
 ## Installation & Configuration
 
