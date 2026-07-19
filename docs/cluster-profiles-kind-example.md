@@ -296,7 +296,7 @@ kubectl patch clusterprofile spoke-cluster --subresource=status --type=merge -p 
 ```
 Note that the provider's `name` refers to the name in the access providers secret/file.
 
-The controller generates the Argo CD cluster Secret `cluster-spoke-cluster` in the same namespace as the ClusterProfile — here the `argocd` namespace, where Argo CD reads its cluster Secrets.
+The controller generates the Argo CD cluster Secret `cluster-spoke-cluster` in `argocd`, the same namespace as the ClusterProfile. Argo CD reads its cluster Secrets from that namespace.
 
 ## 8. Create ApplicationSet
 

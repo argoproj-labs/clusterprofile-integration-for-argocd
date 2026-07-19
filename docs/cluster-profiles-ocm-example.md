@@ -403,7 +403,7 @@ EOF
 
 ## 12. Verify
 
-Check that the Argo CD cluster secret was generated from the ClusterProfile. The secret is created in the same namespace as the ClusterProfile — here the `argocd` namespace:
+Check that the Argo CD cluster Secret was generated from the ClusterProfile. It is created in `argocd`, the same namespace as the ClusterProfile:
 ```bash
 kubectl get secrets -l argocd.argoproj.io/secret-type=cluster
 ```
