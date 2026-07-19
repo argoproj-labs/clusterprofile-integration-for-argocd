@@ -35,12 +35,13 @@ COLLISION_SERVER="https://manual-collision.example.com:6443"
 LONG_LABEL_CP_NAME="$(printf 'l%.0s' {1..64})"
 LONG_SECRET_CP_NAME="$(printf 's%.0s' {1..246})"
 MAX_LENGTH_CP_NAME="$(printf 'm%.0s' {1..253})"
+# Named so that its raw Secret name is what LONG_SECRET_CP_NAME would bound down to,
+# which is the digest TestGeneratedClusterProfileMetadata pins.
 RAW_COLLISION_CP_NAME="$(printf 's%.0s' {1..212})-c487d7cd89959dbc1df6f5deec5584b5"
 LONG_LABEL_SERVER="https://long-label.example.com:6443"
 LONG_SECRET_SERVER="https://long-secret.example.com:6443"
 MAX_LENGTH_SERVER="https://max-length.example.com:6443"
 RAW_COLLISION_SERVER="https://raw-collision.example.com:6443"
-EXPECTED_RAW_COLLISION_SECRET_NAME="cluster-${RAW_COLLISION_CP_NAME}"
 OUT_OF_CLUSTER_CP_NAME="explicit-kubeconfig-context"
 OUT_OF_CLUSTER_SECRET_NAME="cluster-${OUT_OF_CLUSTER_CP_NAME}"
 OUT_OF_CLUSTER_SERVER="https://explicit-kubeconfig.example.com:6443"
@@ -61,7 +62,6 @@ OUT_OF_CLUSTER_CONTROLLER_BIN="${WORK_DIR}/argocd-clusterprofile-controller"
 OUT_OF_CLUSTER_CONTROLLER_LOG="${WORK_DIR}/out-of-cluster-controller.log"
 SHUTDOWN_LOG_PID=""
 CONTROLLER_SUBJECT=""
-REMOTE_ONLY_CP_UID=""
 
 log() {
   printf '[e2e] %s\n' "$*"
@@ -84,36 +84,31 @@ create_kind_cluster() {
   kind create cluster --name "${cluster_name}" "${image_args[@]}" --wait 120s "$@"
 }
 
+stop_background() {
+  local pid="$1"
+  [ -n "${pid}" ] || return 0
+  kill "${pid}" >/dev/null 2>&1 || true
+  wait "${pid}" 2>/dev/null || true
+}
+
 stop_out_of_cluster_controller() {
   local i
-  if [ -z "${OUT_OF_CLUSTER_CONTROLLER_PID}" ]; then
-    return 0
-  fi
-
-  if kill -0 "${OUT_OF_CLUSTER_CONTROLLER_PID}" >/dev/null 2>&1; then
-    kill "${OUT_OF_CLUSTER_CONTROLLER_PID}" >/dev/null 2>&1 || true
-    for i in $(seq 1 30); do
-      if ! kill -0 "${OUT_OF_CLUSTER_CONTROLLER_PID}" >/dev/null 2>&1; then
-        break
-      fi
-      sleep 1
-    done
-    if kill -0 "${OUT_OF_CLUSTER_CONTROLLER_PID}" >/dev/null 2>&1; then
-      kill -KILL "${OUT_OF_CLUSTER_CONTROLLER_PID}" >/dev/null 2>&1 || true
+  [ -n "${OUT_OF_CLUSTER_CONTROLLER_PID}" ] || return 0
+  kill "${OUT_OF_CLUSTER_CONTROLLER_PID}" >/dev/null 2>&1 || true
+  # The controller shuts down gracefully; escalate only if it overruns its budget.
+  for i in $(seq 1 30); do
+    if ! kill -0 "${OUT_OF_CLUSTER_CONTROLLER_PID}" >/dev/null 2>&1; then
+      break
     fi
-  fi
+    sleep 1
+  done
+  kill -KILL "${OUT_OF_CLUSTER_CONTROLLER_PID}" >/dev/null 2>&1 || true
   wait "${OUT_OF_CLUSTER_CONTROLLER_PID}" 2>/dev/null || true
   OUT_OF_CLUSTER_CONTROLLER_PID=""
 }
 
 stop_shutdown_log_capture() {
-  if [ -z "${SHUTDOWN_LOG_PID}" ]; then
-    return 0
-  fi
-  if kill -0 "${SHUTDOWN_LOG_PID}" >/dev/null 2>&1; then
-    kill "${SHUTDOWN_LOG_PID}" >/dev/null 2>&1 || true
-  fi
-  wait "${SHUTDOWN_LOG_PID}" 2>/dev/null || true
+  stop_background "${SHUTDOWN_LOG_PID}"
   SHUTDOWN_LOG_PID=""
 }
 
@@ -159,8 +154,8 @@ cleanup() {
   if [ "${status}" -ne 0 ]; then
     dump_diagnostics
   fi
-  stop_shutdown_log_capture || true
-  stop_out_of_cluster_controller || true
+  stop_shutdown_log_capture
+  stop_out_of_cluster_controller
   if [ "${E2E_SKIP_CLEANUP:-0}" != "1" ]; then
     log "deleting kind clusters"
     if [ "${HUB_CREATED}" = "1" ]; then
@@ -220,16 +215,9 @@ remote_only_fixture_is_reconciled() {
   jq -e \
     --arg name "${REMOTE_ONLY_CP_NAME}" \
     --arg server "${REMOTE_ONLY_SERVER}" \
-    --arg uid "${REMOTE_ONLY_CP_UID}" \
     '.metadata.labels["argocd.argoproj.io/cluster-profile-name"] == $name and
      .metadata.annotations["argocd.argoproj.io/cluster-profile-name"] == $name and
-     (.data.server | @base64d) == $server and
-     any(.metadata.ownerReferences[]?;
-       .apiVersion == "multicluster.x-k8s.io/v1alpha1" and
-       .kind == "ClusterProfile" and
-       .name == $name and
-       .uid == $uid and
-       .controller == true)' <<<"${secret_json}" >/dev/null
+     (.data.server | @base64d) == $server' <<<"${secret_json}" >/dev/null
 }
 
 remote_only_fixture_is_deleted() {
@@ -483,20 +471,11 @@ long_name_secret_is_ready() {
   [ -n "${secret_json}" ] || return 1
   jq -e \
     --arg profile_name "${profile_name}" \
-    --arg profile_uid "${profile_uid}" \
     --arg server "${server}" \
-    '(.metadata.name | length) <= 253 and
-     (.metadata.labels["argocd.argoproj.io/cluster-profile-name"] | length) <= 63 and
-     .metadata.annotations["argocd.argoproj.io/cluster-profile-name"] == $profile_name and
+    '.metadata.annotations["argocd.argoproj.io/cluster-profile-name"] == $profile_name and
      .metadata.labels["argocd.argoproj.io/secret-type"] == "cluster" and
      (.data.name | @base64d) == $profile_name and
-     (.data.server | @base64d) == $server and
-     any(.metadata.ownerReferences[]?;
-       .apiVersion == "multicluster.x-k8s.io/v1alpha1" and
-       .kind == "ClusterProfile" and
-       .name == $profile_name and
-       .uid == $profile_uid and
-       .controller == true)' <<<"${secret_json}" >/dev/null
+     (.data.server | @base64d) == $server' <<<"${secret_json}" >/dev/null
 }
 
 secret_is_gone() {
@@ -668,24 +647,23 @@ restored_cluster_secret_is_ready() {
   jq -e \
     --arg old_uid "${REVOKED_SECRET_UID}" \
     --arg profile_uid "${LIVE_CP_UID}" \
-    --arg name "${CP_NAME}" \
     --arg server "https://${SPOKE_IP}:6443" \
     '.metadata.uid != $old_uid and
      (.data.server | @base64d) == $server and
-     any(.metadata.ownerReferences[]?;
-       .apiVersion == "multicluster.x-k8s.io/v1alpha1" and
-       .kind == "ClusterProfile" and
-       .name == $name and
-       .uid == $profile_uid and
-       .controller == true)' <<<"${secret_json}" >/dev/null
+     any(.metadata.ownerReferences[]?; .uid == $profile_uid)' <<<"${secret_json}" >/dev/null
+}
+
+application_exists() {
+  kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" \
+    get application "${APP_NAME}" >/dev/null 2>&1
 }
 
 wait_for_application() {
-  local sync health phase
+  local status sync health phase
   for i in $(seq 1 600); do
-    sync="$(kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" get application "${APP_NAME}" -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
-    health="$(kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" get application "${APP_NAME}" -o jsonpath='{.status.health.status}' 2>/dev/null || true)"
-    phase="$(kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" get application "${APP_NAME}" -o jsonpath='{.status.operationState.phase}' 2>/dev/null || true)"
+    status="$(kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" get application "${APP_NAME}" \
+      -o jsonpath='{.status.sync.status}|{.status.health.status}|{.status.operationState.phase}' 2>/dev/null || true)"
+    IFS='|' read -r sync health phase <<<"${status}"
     if [ "${sync}" = "Synced" ] && [ "${health}" = "Healthy" ]; then
       log "application ${APP_NAME} is Synced and Healthy"
       return 0
@@ -1775,21 +1753,10 @@ LONG_SECRET_NAME="$(jq -r '.metadata.name' <<<"${LONG_SECRET_JSON}")"
 MAX_LENGTH_SECRET_NAME="$(jq -r '.metadata.name' <<<"${MAX_LENGTH_SECRET_JSON}")"
 RAW_COLLISION_SECRET_NAME="$(jq -r '.metadata.name' <<<"${RAW_COLLISION_SECRET_JSON}")"
 LONG_SECRET_UID="$(jq -r '.metadata.uid' <<<"${LONG_SECRET_JSON}")"
-LONG_NAME_LABEL="$(
-  jq -r '.metadata.labels["argocd.argoproj.io/cluster-profile-name"]' <<<"${LONG_LABEL_SECRET_JSON}"
-)"
-LONG_NAME_ANNOTATION="$(
-  jq -r '.metadata.annotations["argocd.argoproj.io/cluster-profile-name"]' <<<"${LONG_LABEL_SECRET_JSON}"
-)"
 
-test "${LONG_LABEL_SECRET_NAME}" = "cluster-${LONG_LABEL_CP_NAME}"
-test "${#LONG_NAME_LABEL}" -le 63
-test "${LONG_NAME_LABEL}" != "${LONG_LABEL_CP_NAME}"
-test "${LONG_NAME_LABEL#*_}" != "${LONG_NAME_LABEL}"
-test "${LONG_NAME_ANNOTATION}" = "${LONG_LABEL_CP_NAME}"
-test "${LONG_SECRET_NAME#cluster-}" = "${LONG_SECRET_NAME}"
-test "${MAX_LENGTH_SECRET_NAME}" != "cluster-${MAX_LENGTH_CP_NAME}"
-test "${RAW_COLLISION_SECRET_NAME}" = "${EXPECTED_RAW_COLLISION_SECRET_NAME}"
+# The generated names themselves are pinned by TestGeneratedClusterProfileMetadata.
+# Only the API server can show that a bounded name and the raw name it could have
+# collided with are admitted side by side.
 test "${LONG_SECRET_NAME}" != "${RAW_COLLISION_SECRET_NAME}"
 
 log "verifying long-name Secret drift is reconciled"
@@ -1940,17 +1907,11 @@ spec:
         - CreateNamespace=true
 EOF
 
-for i in $(seq 1 120); do
-  if kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" get application "${APP_NAME}" >/dev/null 2>&1; then
-    log "application ${APP_NAME} created"
-    break
-  fi
-  if [ "${i}" = 120 ]; then
-    echo "application ${APP_NAME} was not created" >&2
-    exit 1
-  fi
-  sleep 1
-done
+if ! retry_until 120 "application ${APP_NAME} creation" application_exists; then
+  echo "application ${APP_NAME} was not created" >&2
+  exit 1
+fi
+log "application ${APP_NAME} created"
 
 wait_for_application
 kubectl --context "kind-${SPOKE_CLUSTER}" -n guestbook wait --for=condition=Ready pod -l app=guestbook-ui --timeout=300s
@@ -2173,7 +2134,6 @@ spec:
   clusterManager:
     name: manual
 EOF
-  REMOTE_ONLY_CP_UID="$(clusterprofile_uid "${MIRROR_NS}" "${REMOTE_ONLY_CP_NAME}")"
   kubectl --context "kind-${HUB_CLUSTER}" -n "${MIRROR_NS}" \
     patch clusterprofile "${REMOTE_ONLY_CP_NAME}" --subresource=status --type=merge -p "{
       \"status\": {

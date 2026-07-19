@@ -137,32 +137,36 @@ kubeconfig.
 
 ### Access loss and last-known-good credentials
 
-A successful render records two versioned fingerprints as private annotations
-on the generated Secret. One covers the selected effective access provider; the
-other covers the exact labels and data written to the Secret. Unrelated
-annotations are not part of the managed payload and are preserved.
+A successful render records the name of the selected access provider and a
+fingerprint of the written `data` as controller-managed annotations on the
+generated Secret. Unrelated annotations are not part of the managed payload and
+are preserved.
 
-These fingerprints make render failures fail safely without turning a local
-controller configuration outage into a mass cluster outage:
+Those annotations let the controller tell a revoked provider apart from a local
+configuration problem, so a render failure does not invalidate credentials for
+clusters that are otherwise healthy:
 
 | Reconcile state | Secret behavior |
 | --- | --- |
-| Neither `status.accessProviders` nor deprecated `status.credentialProviders` advertises access | Delete the Secret controlled by that exact ClusterProfile instance. |
-| Rendering succeeds | Create or update the exact payload and both fingerprints. |
-| Rendering fails, but the fingerprinted provider is still advertised and the persisted payload is unchanged | Keep the last-known-good credentials, reconcile the exact current ClusterProfile labels with an optimistic-lock patch, and return an error for retry and observability. |
-| Rendering fails after the provider or its cluster connection data changed | Delete the fingerprinted, exact-owned Secret with UID and resource-version preconditions, then return the render error. |
-| The payload fingerprint no longer matches | Preserve it conservatively because another authorized writer may have changed the payload without updating the annotations. |
-| An owned Secret has missing or unrecognized fingerprints | Preserve it conservatively on render failure; the next successful reconcile backfills the fingerprints. |
+| Neither `status.accessProviders` nor deprecated `status.credentialProviders` advertises access | Delete the Secret whose controller ownerReference UID matches the ClusterProfile UID. |
+| Rendering succeeds | Create or update the controller-managed data and provenance annotations. |
+| Rendering fails, and the recorded provider is no longer advertised in status while the recorded `data` is unchanged | Delete the Secret owned by that ClusterProfile UID, then return the render error. |
+| Rendering fails for any other reason | Keep the last-known-good credentials, update the labels from the current ClusterProfile, and return an error for retry and observability. |
+
+The last row is the conservative default: unless the annotations prove the
+persisted credentials belong to a provider that status no longer advertises,
+they are retained. That covers a payload another writer changed, and a Secret
+whose annotations are missing—the next successful reconcile backfills them.
 
 `status.accessProviders` overrides a deprecated `status.credentialProviders`
 entry with the same name, matching Cluster Inventory API resolution. Provider
-list order, extension list order, JSON object key order, and insignificant JSON
-whitespace do not affect the provider fingerprints. ClusterProfile labels do
-not affect provider identity; they can therefore converge independently while
+identity is the provider name, so rotating a still-advertised provider's
+connection data—its CA, server, or proxy—never revokes credentials during an
+outage; neither do ClusterProfile labels, which converge independently while
 credentials stay last-known-good. ClusterProfile status remains the
 authorization source: removing a provider from only the controller's local
 provider file is treated as a local outage while that provider is still
-advertised in status. To revoke access, remove or change the status entry.
+advertised in status. To revoke access, remove or rename the status entry.
 
 ## Runtime Authentication Flow
 
