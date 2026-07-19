@@ -81,8 +81,7 @@ mathematically collision-free; owner references and provenance checks ensure
 that a collision is reported instead of overwriting another Secret. Garbage
 collection deletes the Secret when the ClusterProfile is deleted. The owner
 reference also lets the controller watch its Secrets, so out-of-band edits or
-deletions are reconciled back. See the README's "Namespace placement" section
-for how the ClusterProfile namespace selects the Argo CD instance.
+deletions are reconciled back.
 
 ### Ownership and concurrency safety
 

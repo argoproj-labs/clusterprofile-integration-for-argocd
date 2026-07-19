@@ -41,16 +41,24 @@ The controller uses `status.accessProviders` to build the corresponding Argo CD 
 
 These `ClusterProfile` resources may be synced automatically by a cluster manager or created manually. The `ClusterProfile` CRD from the [Cluster Inventory API](https://github.com/kubernetes-sigs/cluster-inventory-api) must exist in the cluster before you deploy the controller with Helm.
 
-When running as a standalone controller, it watches for `ClusterProfile` objects and generates `Secret`s for Argo CD. Each `Secret` is created **in the same namespace as its source `ClusterProfile`**, with an owner reference back to it, and is named `cluster-<ClusterProfile name>`. The generated `Secret`s are labeled with `argocd.argoproj.io/secret-type: cluster` and `argocd.argoproj.io/cluster-profile-name`, and also include labels from the source `ClusterProfile`. Names or label values that would exceed the Kubernetes metadata limits are replaced with deterministic bounded encodings; the `argocd.argoproj.io/cluster-profile-name` annotation always carries the full `ClusterProfile` name. See the [architecture](docs/ARCHITECTURE.md) for the exact forms and their collision behavior.
+Each generated `Secret` is created **in the same namespace as its source
+`ClusterProfile`**, with an owner reference back to it. Its name is normally
+`cluster-<ClusterProfile name>`. Names and label values that would exceed
+Kubernetes metadata limits use deterministic bounded encodings instead.
+
+Generated `Secret`s are labeled with
+`argocd.argoproj.io/secret-type: cluster` and
+`argocd.argoproj.io/cluster-profile-name`, and also include labels from the
+source `ClusterProfile`. See the [architecture](docs/ARCHITECTURE.md) for naming
+and collision handling details.
 
 ### Namespace placement
 
-Argo CD reads cluster `Secret`s from its own namespace, so the namespace a `ClusterProfile` is created in decides which Argo CD instance sees the cluster. Whoever creates the `ClusterProfile` makes that decision: place a `ClusterProfile` in a namespace only if the Argo CD instance in that namespace is meant to manage the cluster.
+Because Argo CD reads cluster `Secret`s only from its own namespace, create each `ClusterProfile` in the namespace of the Argo CD instance that should manage the cluster.
 
-Because names only need to be unique within a namespace, one shared controller can watch several namespaces (see `--cluster-profile-namespaces`) and serve one Argo CD instance per team namespace — same-named `ClusterProfile`s in different namespaces never collide, and each instance sees exactly the `Secret`s mirrored into its namespace.
-
-Note that every namespace watched for `ClusterProfile`s is also a namespace the controller creates, updates, and deletes `Secret`s in, and the RBAC of both install methods reflects that: the Helm chart generates a `Role` per watched namespace (or a `ClusterRole` when watching all namespaces), and the kustomize manifests grant cluster-wide `Secret` write access to support `--cluster-profile-namespaces='*'`.
-
+One shared controller can watch several namespaces (see
+`--cluster-profile-namespaces`) and serve one Argo CD instance per team
+namespace.
 
 ### Authentication
 
