@@ -98,30 +98,26 @@ To provide this file to the controller, configure the `argocd-clusterprofile-con
 
 Each generated `Secret` carries an owner reference to its `ClusterProfile`, so when the `ClusterProfile` is deleted, Kubernetes garbage collection removes the corresponding `Secret` automatically.
 
-The controller also removes the `Secret` it owns when the `ClusterProfile`
-stops advertising all access providers. If the controller cannot generate a
-`Secret` from the current `ClusterProfile` and access provider configuration,
-it keeps the existing controller-generated `Secret`. It deletes that `Secret`
-only when it can safely determine that the `ClusterProfile` no longer
-advertises the provider from which it was generated. See the
-[architecture](docs/ARCHITECTURE.md#access-loss-and-last-known-good-credentials)
-for detailed failure behavior.
+The controller also removes the `Secret` it owns when the `ClusterProfile` stops advertising all access providers. If the controller cannot generate a `Secret` from the current `ClusterProfile` and access provider configuration, it keeps the existing controller-generated `Secret`. It deletes that `Secret` only when it can safely determine that the `ClusterProfile` no longer advertises the provider from which it was generated. See the [architecture](docs/ARCHITECTURE.md#access-loss-and-last-known-good-credentials) for detailed failure behavior.
 
-## Installation & Configuration
+## Installation and configuration
 
 The Cluster Profile controller runs as a standalone deployment alongside your Argo CD installation.
 
-To install the standalone controller into your cluster:
-```bash
-kubectl apply -k artifacts/manifests
-```
+Install the Helm chart from GHCR:
 
-To install a released Helm chart from GHCR:
 ```bash
 helm install argocd-clusterprofile-controller \
   oci://ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd/argocd-clusterprofile-controller \
   --version 0.1.0 \
-  --namespace argocd
+  --namespace argocd \
+  --create-namespace
+```
+
+To deploy the Kustomize manifests from a source checkout instead:
+
+```bash
+kubectl apply -k artifacts/manifests
 ```
 
 The Helm chart does not install the `clusterprofiles.multicluster.x-k8s.io` CRD.
@@ -132,27 +128,18 @@ component already owns it.
 
 The bundled Helm and Kustomize deployments enable leader election. For high availability, set Helm's `replicaCount` to at least 2 or use a Kustomize overlay to run multiple controller replicas.
 
-Every namespace watched for `ClusterProfile`s is also a namespace where the
-controller writes `Secret`s. The Helm chart creates a `Role` in each configured
-namespace, or a `ClusterRole` when watching all namespaces. The Kustomize
-manifests grant cluster-wide `Secret` access to support
-`--cluster-profile-namespaces='*'`.
+Every namespace watched for `ClusterProfile`s is also a namespace where the controller writes `Secret`s. The Helm chart creates a `Role` in each configured namespace, or a `ClusterRole` when watching all namespaces. Wildcard mode therefore grants the controller read and write access to every `Secret` in the cluster. Prefer an explicit namespace list unless cluster-wide watching is required. The Kustomize manifests grant cluster-wide `Secret` access to support `--cluster-profile-namespaces='*'`.
 
-To provide an access providers file to the controller, you should configure the `argocd-clusterprofile-controller` deployment with the `--clusterprofile-provider-file` argument (or `ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTERPROFILE_PROVIDER_FILE` environment variable). This should point to a mounted file that contains the configuration for the access providers.
+### Configuration parameters
 
-### Configuration Parameters
-
-The controller binary can be configured via command-line arguments or
-equivalent environment variables. The defaults below apply when invoking the
-binary directly; packaged manifests may set explicit values, as described
-above.
-
-**Note**: Only the first two arguments are specific to this controller; the rest are standard Argo CD controller arguments.
+The controller binary can be configured via command-line arguments or equivalent environment variables. The defaults below apply when invoking the binary directly; packaged manifests may set explicit values, as described above. Standard kubeconfig flags are also available through `--help`.
 
 | Argument | Environment Variable | Default | Description |
 | --- | --- | --- | --- |
 | `--clusterprofile-provider-file` | `ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTERPROFILE_PROVIDER_FILE` | `""` | Path to the custom access providers file. |
 | `--cluster-profile-namespaces` | `ARGOCD_CLUSTERPROFILE_CONTROLLER_NAMESPACES` | `""` | Comma-separated namespaces to watch for `ClusterProfile`s (defaults to active namespace). Use `'*'` to watch all namespaces (quote it to avoid shell globbing). |
+| `--metrics-addr` | — | `":8080"` | Address on which the metrics endpoint listens. |
+| `--probe-addr` | — | `":8081"` | Address on which the health and readiness endpoints listen. |
 | `--enable-leader-election` | `ARGOCD_CLUSTERPROFILE_CONTROLLER_ENABLE_LEADER_ELECTION` | `false` | Enables leader election for HA/redundancy. |
 | `--dry-run` | `ARGOCD_CLUSTERPROFILE_CONTROLLER_DRY_RUN` | `false` | Enable dry-run mode. |
 | `--debug` | `ARGOCD_CLUSTERPROFILE_CONTROLLER_DEBUG` | `false` | Print debug logs (takes precedence over log level). |
@@ -161,7 +148,14 @@ above.
 
 ### Uninstalling
 
-To uninstall the controller:
+To uninstall a Helm release installed with the command above:
+
+```bash
+helm uninstall argocd-clusterprofile-controller --namespace argocd
+```
+
+To uninstall the Kustomize manifests:
+
 ```bash
 kubectl delete -k artifacts/manifests
 ```

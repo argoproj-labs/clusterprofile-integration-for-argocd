@@ -1,18 +1,19 @@
-# Using Cluster Profiles with Kind Clusters
+# Using Cluster Profiles with Kind clusters
 
 This guide demonstrates how to use Cluster Profiles to connect a spoke cluster to an Argo CD instance running in a hub cluster.
 
 > [!TIP]
-> For a similar example, see the ClusterProfile API's [secretreader](https://github.com/kubernetes-sigs/cluster-inventory-api/blob/main/examples/controller-example/README.md).
+> For a similar example, see the ClusterProfile API's [secretreader](https://github.com/kubernetes-sigs/cluster-inventory-api/blob/main/examples/controller-example/plugins/secretreader/README.md).
 
 ## Prerequisites
 
 - Docker, Kind, Kubectl, Helm
 - A Kubernetes version that supports ImageVolume.
 
-## 1. Create Hub and Spoke Clusters
+## 1. Create hub and spoke clusters
 
 Create two `kind` clusters:
+
 ```bash
 kind create cluster --name hub
 kind create cluster --name spoke
@@ -38,13 +39,12 @@ helm upgrade --install argocd argo/argo-cd \
 kubectl apply -k artifacts/manifests
 ```
 
-### \[Alternative\] Local Development
+### \[Alternative\] Local development
 
 If you have made changes to the controller source code, build and deploy a local image instead. This is only necessary when doing local development of this controller!
 
 ```bash
 kubectl config use-context kind-hub
-kubectl create namespace argocd
 kubectl config set-context --current --namespace=argocd
 
 # Build local controller image
@@ -232,11 +232,10 @@ spec:
           volumeMounts:
             - name: cp-creds-vol
               mountPath: /app/cp-creds
-          args:
-            - "/manager"
-            - "--clusterprofile-provider-file=/app/cp-creds/cp-creds.json"'
+          env:
+            - name: ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTERPROFILE_PROVIDER_FILE
+              value: /app/cp-creds/cp-creds.json
 ```
-Setting a value for `--clusterprofile-provider-file` will enable the Cluster Profile syncer in the clusterprofile controller.
 
 Wait for both controllers to roll out:
 
