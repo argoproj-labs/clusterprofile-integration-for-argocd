@@ -16,4 +16,10 @@ locally built tag.
 
 {{ template "chart.requirementsSection" . }}
 
+## Vertical Pod Autoscaler
+
+Set `vpa.enabled` to create a `VerticalPodAutoscaler` for the controller
+Deployment. The cluster must already provide the `autoscaling.k8s.io/v1` CRD,
+a VPA controller, and the Metrics Server; this chart does not install them.
+
 {{ template "chart.valuesSection" . }}{{ "\n" -}}

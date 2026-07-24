@@ -17,6 +17,12 @@ locally built tag.
 
 Kubernetes: `>=1.27.0-0`
 
+## Vertical Pod Autoscaler
+
+Set `vpa.enabled` to create a `VerticalPodAutoscaler` for the controller
+Deployment. The cluster must already provide the `autoscaling.k8s.io/v1` CRD,
+a VPA controller, and the Metrics Server; this chart does not install them.
+
 ## Values
 
 | Key | Type | Default | Description |
@@ -74,3 +80,8 @@ Kubernetes: `>=1.27.0-0`
 | terminationGracePeriodSeconds | int | `30` | Pod termination grace period in seconds. |
 | tolerations | list | `[]` | Tolerations for the controller pod. |
 | topologySpreadConstraints | list | `[{"matchLabelKeys":["pod-template-hash"],"maxSkew":1,"topologyKey":"kubernetes.io/hostname","whenUnsatisfiable":"ScheduleAnyway"}]` | Topology spread constraints for the controller pods. |
+| vpa.annotations | object | `{}` | Extra annotations for the VerticalPodAutoscaler. |
+| vpa.containerPolicy | object | `{}` | VPA policy for the controller container, excluding `containerName`. |
+| vpa.enabled | bool | `false` | Create a VerticalPodAutoscaler for the controller. |
+| vpa.labels | object | `{}` | Extra labels for the VerticalPodAutoscaler. |
+| vpa.updateMode | string | `"Recreate"` | VPA update mode. |

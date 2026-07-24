@@ -115,6 +115,64 @@ push-image: ## Push single-arch container image.
 helm-lint: ## Lint Helm charts.
 	helm lint $(HELM_CHART_DIRS)
 
+.PHONY: validate-helm-rendering
+validate-helm-rendering: ## Verify default and VPA-enabled Helm rendering.
+	@set -e; \
+	tmp=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	helm template test $(HELM_VALUES_SCHEMA_CHART) >"$$tmp/default.yaml"; \
+	if grep -q '^kind: VerticalPodAutoscaler$$' "$$tmp/default.yaml"; then \
+		echo "default Helm rendering unexpectedly contains a VerticalPodAutoscaler" >&2; \
+		exit 1; \
+	fi; \
+	grep -q 'memory: 256Mi$$' "$$tmp/default.yaml"; \
+	grep -q 'cpu: 10m$$' "$$tmp/default.yaml"; \
+	grep -q 'memory: 128Mi$$' "$$tmp/default.yaml"; \
+	if grep -q 'cpu: 500m$$' "$$tmp/default.yaml"; then \
+		echo "default Helm rendering unexpectedly contains a CPU limit" >&2; \
+		exit 1; \
+	fi; \
+	helm template test $(HELM_VALUES_SCHEMA_CHART) \
+		--set vpa.enabled=true \
+		>"$$tmp/vpa-default.yaml"; \
+	grep -q '^kind: VerticalPodAutoscaler$$' "$$tmp/vpa-default.yaml"; \
+	grep -q 'updateMode: "Recreate"$$' "$$tmp/vpa-default.yaml"; \
+	helm template test $(HELM_VALUES_SCHEMA_CHART) \
+		--set vpa.enabled=true \
+		--set-string vpa.updateMode=Off \
+		--set-string vpa.labels.test-label=custom \
+		--set-string vpa.annotations.test-annotation=custom \
+		--set-string vpa.containerPolicy.controlledValues=RequestsOnly \
+		>"$$tmp/vpa.yaml"; \
+	grep -q '^kind: VerticalPodAutoscaler$$' "$$tmp/vpa.yaml"; \
+	grep -q 'updateMode: "Off"$$' "$$tmp/vpa.yaml"; \
+	grep -q 'containerName: clusterprofile-controller$$' "$$tmp/vpa.yaml"; \
+	grep -q 'controlledValues: RequestsOnly$$' "$$tmp/vpa.yaml"; \
+	grep -q 'test-label: custom$$' "$$tmp/vpa.yaml"; \
+	grep -q 'test-annotation: custom$$' "$$tmp/vpa.yaml"; \
+	if helm template test $(HELM_VALUES_SCHEMA_CHART) \
+		--set vpa.enabled=true \
+		--set-string vpa.containerPolicy.containerName=other \
+		>/dev/null 2>&1; then \
+		echo "vpa.containerPolicy.containerName override unexpectedly rendered" >&2; \
+		exit 1; \
+	fi; \
+	for mode in Off Initial Recreate InPlaceOrRecreate; do \
+		helm template test $(HELM_VALUES_SCHEMA_CHART) \
+			--set vpa.enabled=true \
+			--set-string vpa.updateMode="$$mode" \
+			>/dev/null; \
+	done; \
+	for mode in Auto InPlace Unknown; do \
+		if helm template test $(HELM_VALUES_SCHEMA_CHART) \
+			--set vpa.enabled=true \
+			--set-string vpa.updateMode="$$mode" \
+			>/dev/null 2>&1; then \
+			echo "unsupported VPA update mode $$mode unexpectedly passed validation" >&2; \
+			exit 1; \
+		fi; \
+	done
+
 .PHONY: validate-values-schema
 validate-values-schema: ## Verify generated Helm values schema is up to date.
 	@set -e; \
