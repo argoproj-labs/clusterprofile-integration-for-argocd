@@ -42,9 +42,9 @@ a VPA controller, and the Metrics Server; this chart does not install them.
 | controller.extraVolumes | list | `[]` | Extra volumes for the controller pod. |
 | controller.logFormat | string | `""` | Explicit log format (`json` or `text`). Empty keeps the controller default or Argo CD cmd params value. |
 | controller.logLevel | string | `""` | Explicit log level (`debug`, `info`, `warn`, `error`). Empty keeps the controller default or Argo CD cmd params value. |
-| controller.metricsPort | int | `8080` | Metrics bind port passed to the controller. |
-| controller.name | string | `"clusterprofile-controller"` | Controller name string used as the component name and appended to the base fullname. |
-| controller.probePort | int | `8081` | Health probe container port. |
+| controller.metricsPort | int | `8080` | Metrics port. |
+| controller.name | string | `"clusterprofile-controller"` | Controller component name. |
+| controller.probePort | int | `8081` | Health probe port. |
 | fullnameOverride | string | `""` | String to fully override the base fully-qualified resource name. |
 | global | object | `{}` | Global values reserved for parent charts. |
 | image.pullPolicy | string | `"IfNotPresent"` | Image pull policy for the controller container. |

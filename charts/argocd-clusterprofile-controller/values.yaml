@@ -89,7 +89,7 @@ vpa:
 # @schema additionalProperties:false
 controller:
   # @schema required; minLength:1; maxLength:63; pattern:^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
-  # -- Controller name string used as the component name and appended to the base fullname.
+  # -- Controller component name.
   name: clusterprofile-controller
   # @schema required; item:string
   # -- Extra command-line arguments for the controller.
@@ -101,10 +101,10 @@ controller:
   # -- Namespaces to watch for ClusterProfile resources. Empty uses the release namespace; `*` watches all namespaces.
   clusterProfileNamespaces: []
   # @schema required; minimum:1; maximum:65535
-  # -- Metrics bind port passed to the controller.
+  # -- Metrics port.
   metricsPort: 8080
   # @schema required; minimum:1; maximum:65535
-  # -- Health probe container port.
+  # -- Health probe port.
   probePort: 8081
   # @schema required
   # -- Enable dry-run mode.
