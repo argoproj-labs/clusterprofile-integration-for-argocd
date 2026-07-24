@@ -148,6 +148,9 @@ jobs:
       - name: Lint Helm charts
         run: make helm-lint
 
+      - name: Validate Helm rendering
+        run: make validate-helm-rendering
+
       - name: Validate helm-docs generation
         uses: losisin/helm-docs-github-action@2ccf3e77eb70dc80d62f8cc26f15d0a96b75fef4 # v1.8.0
         with:

@@ -61,6 +61,32 @@ podDisruptionBudget:
   annotations: {}
 
 # @schema additionalProperties:false
+vpa:
+  # @schema required
+  # -- Create a VerticalPodAutoscaler for the controller.
+  enabled: false
+  # @schema required; additionalProperties:{"type":"string"}
+  # -- Extra labels for the VerticalPodAutoscaler.
+  labels: {}
+  # @schema required; additionalProperties:{"type":"string"}
+  # -- Extra annotations for the VerticalPodAutoscaler.
+  annotations: {}
+  # @schema required; enum:["Off", Initial, Recreate, InPlaceOrRecreate]
+  # -- VPA update mode.
+  updateMode: Recreate
+  # @schema required; skipProperties:true
+  # -- VPA policy for the controller container, excluding `containerName`.
+  containerPolicy: {}
+    # controlledResources: ["cpu", "memory"]
+    # controlledValues: RequestsAndLimits
+    # minAllowed:
+    #   cpu: 10m
+    #   memory: 128Mi
+    # maxAllowed:
+    #   cpu: 2
+    #   memory: 4Gi
+
+# @schema additionalProperties:false
 controller:
   # @schema required; minLength:1; maxLength:63; pattern:^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
   # -- Controller name string used as the component name and appended to the base fullname.

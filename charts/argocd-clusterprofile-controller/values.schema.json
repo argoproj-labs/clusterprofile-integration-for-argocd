@@ -537,6 +537,51 @@
           }
         }
       }
+    },
+    "vpa": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "labels",
+        "annotations",
+        "updateMode",
+        "containerPolicy"
+      ],
+      "properties": {
+        "annotations": {
+          "description": "Extra annotations for the VerticalPodAutoscaler.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "containerPolicy": {
+          "description": "VPA policy for the controller container, excluding `containerName`.",
+          "type": "object"
+        },
+        "enabled": {
+          "description": "Create a VerticalPodAutoscaler for the controller.",
+          "type": "boolean"
+        },
+        "labels": {
+          "description": "Extra labels for the VerticalPodAutoscaler.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "updateMode": {
+          "description": "VPA update mode.",
+          "type": "string",
+          "enum": [
+            "Off",
+            "Initial",
+            "Recreate",
+            "InPlaceOrRecreate"
+          ]
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

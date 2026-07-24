@@ -1,0 +1,33 @@
+{{- $vpa := .Values.vpa -}}
+{{- if and $vpa.enabled (hasKey $vpa.containerPolicy "containerName") -}}
+{{- fail "vpa.containerPolicy must not set containerName; the chart targets the controller container" -}}
+{{- end -}}
+{{- if $vpa.enabled }}
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: {{ include "argocd-clusterprofile-controller.controller.fullname" . }}
+  namespace: {{ include "argocd-clusterprofile-controller.namespace" . }}
+  labels:
+    {{- include "argocd-clusterprofile-controller.labels" . | nindent 4 }}
+    {{- with $vpa.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with $vpa.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "argocd-clusterprofile-controller.controller.fullname" . }}
+  updatePolicy:
+    updateMode: {{ $vpa.updateMode | quote }}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: {{ .Values.controller.name }}
+        {{- with $vpa.containerPolicy }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}
