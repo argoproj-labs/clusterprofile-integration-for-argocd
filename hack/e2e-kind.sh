@@ -3,9 +3,8 @@
 set -euo pipefail
 
 ARGOCD_CHART_VERSION="${ARGOCD_CHART_VERSION:-9.5.19}"
-# TODO: Once the first Argo CD release containing 6d92e177b45fcd51bde0dbc169f7f923acc9a79d
-# is available, replace the latest default with that released version and document it as the minimum
-# supported Argo CD version for ClusterProfile exec config propagation.
+# Argo CD v3.5.0 is the compatibility floor. CI exercises the required
+# exec-config behavior against the latest upstream image.
 ARGOCD_IMAGE_REPOSITORY="${ARGOCD_IMAGE_REPOSITORY:-quay.io/argoproj/argocd}"
 ARGOCD_IMAGE_TAG="${ARGOCD_IMAGE_TAG:-latest}"
 ARGOCD_IMAGE_PULL_POLICY="${ARGOCD_IMAGE_PULL_POLICY:-Always}"

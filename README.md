@@ -7,10 +7,10 @@ The [Cluster Profile API](https://multicluster.sigs.k8s.io/concepts/cluster-prof
 
 When reading the details below, it may be helpful to have concrete examples. See the [kind cluster](docs/cluster-profiles-kind-example.md), [GCP](docs/cluster-profiles-gcp-example.md), or [Open Cluster Management (OCM)](docs/cluster-profiles-ocm-example.md) quickstarts for specifics on how the controller can be used.
 
-## Prerequisites & Compatibility
+## Prerequisites and compatibility
 
 - **Kubernetes**: v1.27+
-- **Argo CD**: v2.8+ (including v3.0)
+- **Argo CD**: v3.5+
 - **Go** (for local development): v1.26+
 
 ## How it works
