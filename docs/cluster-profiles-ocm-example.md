@@ -7,22 +7,42 @@ OCM automatically creates and manages ClusterProfile objects for all managed clu
 ## Prerequisites
 
 - [kubectl](https://kubernetes.io/docs/tasks/tools/)
-- [clusteradm](https://open-cluster-management.io/getting-started/quick-start/#install-clusteradm-cli-tool) (OCM CLI)
+- [clusteradm](https://open-cluster-management.io/docs/getting-started/installation/start-the-control-plane/) (OCM CLI)
 - [Helm](https://helm.sh/docs/intro/install/) v3+
 - Two Kubernetes clusters (this guide uses [Kind](https://kind.sigs.k8s.io/) as an example, but any Kubernetes distribution works)
 
 Install `clusteradm`:
+
 ```bash
-curl -L https://raw.githubusercontent.com/open-cluster-management-io/clusteradm/main/install.sh | bash
+CLUSTERADM_VERSION=v1.3.1
+CLUSTERADM_INSTALLER_SHA256=6196ae41931286bd25c1fed0fb114b2a4d0c5a6238db08beb5dade72da46e05f
+installer="$(mktemp)"
+trap 'rm -f "${installer}"' EXIT
+
+curl -fsSL \
+  -o "${installer}" \
+  "https://raw.githubusercontent.com/open-cluster-management-io/clusteradm/${CLUSTERADM_VERSION}/install.sh"
+
+if command -v sha256sum >/dev/null 2>&1; then
+  printf '%s  %s\n' "${CLUSTERADM_INSTALLER_SHA256}" "${installer}" | sha256sum --check -
+elif command -v shasum >/dev/null 2>&1; then
+  printf '%s  %s\n' "${CLUSTERADM_INSTALLER_SHA256}" "${installer}" | shasum --algorithm 256 --check
+else
+  echo "sha256sum or shasum is required to verify the clusteradm installer" >&2
+  exit 1
+fi
+
+bash "${installer}" "${CLUSTERADM_VERSION}"
 ```
 
 Add the OCM Helm chart repository:
+
 ```bash
 helm repo add ocm https://open-cluster-management.io/helm-charts
 helm repo update
 ```
 
-## 1. Create Hub and Managed Clusters
+## 1. Create hub and managed clusters
 
 Create two `kind` clusters. If you are using existing clusters, skip this step and substitute your own kubeconfig contexts throughout.
 
@@ -300,9 +320,9 @@ spec:
           volumeMounts:
             - name: cp-creds-vol
               mountPath: /app/cp-creds
-          args:
-            - "/manager"
-            - "--clusterprofile-provider-file=/app/cp-creds/cp-creds.json"'
+          env:
+            - name: ARGOCD_CLUSTERPROFILE_CONTROLLER_CLUSTERPROFILE_PROVIDER_FILE
+              value: /app/cp-creds/cp-creds.json
 ```
 
 ### Mount the cp-creds binary in Argo CD

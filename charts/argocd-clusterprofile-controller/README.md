@@ -26,7 +26,7 @@ Kubernetes: `>=1.27.0-0`
 | controller.argoCDCmdParams.configMapName | string | `"argocd-cmd-params-cm"` | ConfigMap name containing Argo CD command parameters. |
 | controller.argoCDCmdParams.enabled | bool | `true` | Read optional Argo CD command parameter keys from a ConfigMap. |
 | controller.args | list | `[]` | Extra command-line arguments for the controller. |
-| controller.clusterProfileNamespaces | list | `[]` | Namespaces to watch for ClusterProfile resources. Empty means the release namespace. Use `*` alone to watch all namespaces. When `rbac.create` is true, the chart creates ClusterProfile and Secret permissions matching this watch scope. |
+| controller.clusterProfileNamespaces | list | `[]` | Namespaces to watch for ClusterProfile resources. Empty uses the release namespace; `*` watches all namespaces. |
 | controller.clusterProfileProvidersFile | string | `""` | Path to a mounted ClusterProfile providers file. |
 | controller.debug | bool | `false` | Enable debug logging. Takes precedence over logLevel. |
 | controller.dryRun | bool | `false` | Enable dry-run mode. |

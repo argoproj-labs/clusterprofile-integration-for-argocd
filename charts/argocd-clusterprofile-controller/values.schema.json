@@ -59,7 +59,7 @@
           }
         },
         "clusterProfileNamespaces": {
-          "description": "Namespaces to watch for ClusterProfile resources. Empty means the release namespace. Use `*` alone to watch all namespaces. When `rbac.create` is true, the chart creates ClusterProfile and Secret permissions matching this watch scope.",
+          "description": "Namespaces to watch for ClusterProfile resources. Empty uses the release namespace; `*` watches all namespaces.",
           "oneOf": [
             {
               "type": "array",
