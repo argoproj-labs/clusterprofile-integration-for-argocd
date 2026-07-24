@@ -144,20 +144,20 @@
           ]
         },
         "metricsPort": {
-          "description": "Metrics bind port passed to the controller.",
+          "description": "Metrics port.",
           "type": "integer",
           "maximum": 65535,
           "minimum": 1
         },
         "name": {
-          "description": "Controller name string used as the component name and appended to the base fullname.",
+          "description": "Controller component name.",
           "type": "string",
           "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
           "maxLength": 63,
           "minLength": 1
         },
         "probePort": {
-          "description": "Health probe container port.",
+          "description": "Health probe port.",
           "type": "integer",
           "maximum": 65535,
           "minimum": 1
