@@ -55,9 +55,10 @@ kind load docker-image ghcr.io/argoproj-labs/clusterprofile-integration-for-argo
 kubectl apply -k artifacts/manifests
 ```
 
-## 3. Configure Spoke Cluster Service Account
+## 3. Configure spoke cluster service account
 
 Create `argocd-manager` service account in `spoke`:
+
 ```bash
 kubectl config use-context kind-spoke
 kubectl apply -f - <<EOF
@@ -92,6 +93,7 @@ EOF
 ```
 
 Create the namespace for the sample application:
+
 ```bash
 kubectl config use-context kind-spoke
 kubectl create namespace guestbook
@@ -250,6 +252,7 @@ kubectl rollout status deploy/argocd-clusterprofile-controller --timeout=300s
 Normally, a controller would create the Cluster Profile and update its status. In this example we will create it manually and patch in the status.
 
 Create the Cluster Profile object to represent `spoke`:
+
 ```bash
 kubectl apply -f - <<EOF
 apiVersion: "multicluster.x-k8s.io/v1alpha1"
@@ -289,6 +292,7 @@ kubectl patch clusterprofile spoke-cluster --subresource=status --type=merge -p 
   }
 }"
 ```
+
 Note that the provider's `name` refers to the name in the access providers secret/file.
 
 The controller generates the Argo CD cluster Secret `cluster-spoke-cluster` in `argocd`, the same namespace as the ClusterProfile. Argo CD reads its cluster Secrets from that namespace.
@@ -296,6 +300,7 @@ The controller generates the Argo CD cluster Secret `cluster-spoke-cluster` in `
 ## 8. Create ApplicationSet
 
 Create simple ApplicationSet with ClusterGenerator:
+
 ```bash
 kubectl apply -f - <<EOF
 apiVersion: argoproj.io/v1alpha1
@@ -325,10 +330,12 @@ EOF
 Everything should now be in place!
 
 Verify that the application was created and synced:
+
 ```bash
 kubectl config use-context kind-spoke
 kubectl get pods -n guestbook
 ```
+
 You should see the `guestbook-ui` pod appear.
 
 ## 9. Cleanup

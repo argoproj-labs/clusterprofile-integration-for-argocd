@@ -20,6 +20,7 @@ When reading the details below, it may be helpful to have concrete examples. See
 The Cluster Profile controller watches for `ClusterProfile` custom resources. For each `ClusterProfile` it finds, it generates a corresponding Argo CD `Secret`, which then allows Argo CD to connect to and manage the remote cluster.
 
 A `ClusterProfile` object looks like this:
+
 ```yaml
 apiVersion: "multicluster.x-k8s.io/v1alpha1"
 kind: ClusterProfile
@@ -41,40 +42,32 @@ The controller uses `status.accessProviders` to build the corresponding Argo CD 
 
 These `ClusterProfile` resources may be synced automatically by a cluster manager or created manually. The `ClusterProfile` CRD from the [Cluster Inventory API](https://github.com/kubernetes-sigs/cluster-inventory-api) must exist in the cluster before you deploy the controller with Helm.
 
-Each generated `Secret` is created **in the same namespace as its source
-`ClusterProfile`**, with an owner reference back to it. Its name is normally
-`cluster-<ClusterProfile name>`. Names and label values that would exceed
-Kubernetes metadata limits use deterministic bounded encodings instead.
+Each generated `Secret` is created **in the same namespace as its source `ClusterProfile`**, with an owner reference back to it. Its name is normally `cluster-<ClusterProfile name>`. Names and label values that would exceed Kubernetes metadata limits use deterministic bounded encodings instead.
 
-Generated `Secret`s are labeled with
-`argocd.argoproj.io/secret-type: cluster` and
-`argocd.argoproj.io/cluster-profile-name`, and also include labels from the
-source `ClusterProfile`. See the [architecture](docs/ARCHITECTURE.md) for naming
-and collision handling details.
+Generated `Secret`s are labeled with `argocd.argoproj.io/secret-type: cluster` and `argocd.argoproj.io/cluster-profile-name`, and also include labels from the source `ClusterProfile`. See the [architecture](docs/ARCHITECTURE.md) for naming and collision handling details.
 
 ### Namespace placement
 
 Because Argo CD reads cluster `Secret`s only from its own namespace, create each `ClusterProfile` in the namespace of the Argo CD instance that should manage the cluster.
 
-One shared controller can watch several namespaces (see
-`--cluster-profile-namespaces`) and serve one Argo CD instance per team
-namespace.
+One shared controller can watch several namespaces (see `--cluster-profile-namespaces`) and serve one Argo CD instance per team namespace.
 
 ### Authentication
 
 These secrets are used by the Argo CD Application controller to authenticate to remote clusters. The Cluster Profile controller can generate these secrets with one of two authentication methods: using built-in cloud provider authentication, or using a custom access providers file.
 
-#### Built-in Cloud Provider Authentication
+#### Built-in cloud provider authentication
 
 If you are using a supported cloud provider (such as GCP), the Cluster Profile controller can generate a secret that uses the `argocd-k8s-auth` command to authenticate to the remote cluster.
 
 To use this feature, the access provider name in the `ClusterProfile`'s status must start with `argo-cd-builtin-` followed by the provider's name (e.g., `argo-cd-builtin-gcp`). When the controller encounters an access provider with this prefix, it will automatically configure the generated Argo CD secret to use the `argocd-k8s-auth <provider>` command for authentication. The supported provider names are `gcp`, `aws`, and `azure`. See the [GCP example](docs/cluster-profiles-gcp-example.md) for more.
 
-#### Custom Access Providers File
+#### Custom access providers file
 
 For other environments or custom authentication, part of the design of Cluster Profiles (unlike Secrets) is to keep authentication information separate from the ClusterProfile itself. This is achieved using an "access providers" file, which lists named access providers with `execConfig`s that specify how to authenticate to a cluster.
 
 The access providers file would look something like this:
+
 ```json
 {
   "providers": [
@@ -160,38 +153,48 @@ To uninstall the Kustomize manifests:
 kubectl delete -k artifacts/manifests
 ```
 
-## Local Development & Contributing
+## Local development and contributing
 
 Contributions are welcome!
 
-### Building & Testing
+### Building and testing
 
 - **Run Unit Tests**:
+
   ```bash
   make test
   ```
+
 - **Build Local Binary**:
+
   ```bash
   make build
   ```
+
 - **Run Controller Locally**:
+
   ```bash
   make run
   ```
+
 - **Build Docker Image**:
+
   ```bash
   make docker-build
   ```
+
 - **Validate Helm chart**:
+
   ```bash
   make helm-lint
   make validate-values-schema
   make generate-helm-docs
   ```
+
   See the [Helm chart development guide](docs/developer-guide/helm-chart-development.md)
   for chart versioning and generation details.
 
-## Community & Governance
+## Community and governance
 
 - **Slack**: Join the discussion in the `#argo-cluster-auth` channel on the [CNCF Slack](https://slack.cncf.io/).
 - **Code of Conduct**: This project adheres to the [CNCF Code of Conduct](https://github.com/cncf/foundation/blob/main/code-of-conduct.md).
