@@ -1,4 +1,4 @@
-# Security Policy for clusterprofile-integration-for-argocd
+# Security policy for clusterprofile-integration-for-argocd
 
 Policy version 1.0 (2026/05/21)
 
@@ -6,11 +6,11 @@ Policy version 1.0 (2026/05/21)
 
 The `clusterprofile-integration-for-argocd` project takes security very seriously, and we are committed to continuously working on improving the security of the project.
 
-## Supported Versions
+## Supported versions
 
 Only the most recent minor version (e.g. 1.0 or 1.1) will receive security fixes, and no back-ports will be made.
 
-## Reporting a Vulnerability
+## Reporting a vulnerability
 
 If you find a security vulnerability in the `clusterprofile-integration-for-argocd` code, we appreciate your responsible disclosure to us.
 

@@ -226,18 +226,15 @@ You should see the `status.accessProviders` section with `name: open-cluster-man
 ## 9. Install Argo CD
 
 Install Argo CD on the hub cluster:
+
 ```bash
 kubectl config use-context kind-hub
 kubectl config set-context --current --namespace=argocd
 
 helm repo add argo https://argoproj.github.io/argo-helm
 helm repo update argo
-# TODO: Once the first Argo CD release containing
-# 6d92e177b45fcd51bde0dbc169f7f923acc9a79d is available, replace this latest
-# image tag override with that released version and document it as the minimum
-# supported Argo CD version for ClusterProfile exec config propagation.
 helm upgrade --install argocd argo/argo-cd \
-  --set global.image.tag=latest \
+  --set global.image.tag=v3.5.0 \
   --namespace argocd \
   --create-namespace \
   --wait

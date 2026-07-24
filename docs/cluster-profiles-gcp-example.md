@@ -45,20 +45,17 @@ gcloud container clusters get-credentials spoke --location=${GCP_LOCATION}
 kubectl create namespace guestbook
 ```
 
-## 3. Install Argo CD on Hub
+## 3. Install Argo CD on hub
 
 Install Argo CD in the hub cluster:
+
 ```bash
 kubectl config use-context gke_${GCP_PROJECT_ID}_${GCP_LOCATION}_hub
 kubectl config set-context --current --namespace=argocd
 helm repo add argo https://argoproj.github.io/argo-helm
 helm repo update argo
-# TODO: Once the first Argo CD release containing
-# 6d92e177b45fcd51bde0dbc169f7f923acc9a79d is available, replace this latest
-# image tag override with that released version and document it as the minimum
-# supported Argo CD version for ClusterProfile exec config propagation.
 helm upgrade --install argocd argo/argo-cd \
-  --set global.image.tag=latest \
+  --set global.image.tag=v3.5.0 \
   --namespace argocd \
   --create-namespace \
   --wait
