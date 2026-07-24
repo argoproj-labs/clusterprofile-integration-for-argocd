@@ -17,9 +17,10 @@ gcloud config set project ${GCP_PROJECT_ID}
 gcloud config set compute/region ${GCP_LOCATION}
 ```
 
-## 2. Create Hub and Spoke GKE Clusters
+## 2. Create hub and spoke GKE clusters
 
 Create a `hub` cluster with relevant settings:
+
 ```bash
 gcloud container clusters create hub \
   --location=${GCP_LOCATION} \
@@ -32,12 +33,14 @@ Workload Identity allows Kubernetes service accounts to impersonate GCP service 
 Enabling Fleet with the cluster labels tells the [Fleet Cluster Profile Syncer](https://docs.cloud.google.com/kubernetes-engine/fleet-management/docs/generate-inventory-for-integrations) to automatically create Cluster Profiles for all clusters in the Fleet within the management cluster (`fleet-clusterinventory-management-cluster=true`). The `fleet-clusterinventory-access-provider-name=argo-cd-builtin-gcp` label tells the ClusterProfile to use the access provider name `argo-cd-builtin-gcp`, this `argo-cd-builtin-` prefix indicates that the Cluster Profile controller should generate a secret configured for built-in GCP authentication rather than look for a custom access providers file. For an example with a custom exec config, see the [kind example](cluster-profiles-kind-example.md).
 
 Create a standard GKE Fleet cluster to act as the `spoke`:
+
 ```bash
 gcloud container clusters create spoke --location=${GCP_LOCATION} --enable-fleet \
   --labels=fleet-clusterinventory-access-provider-name=argo-cd-builtin-gcp
 ```
 
 Get contexts for both clusters and set `namespace=argocd` for all future `hub` cluster commands:
+
 ```bash
 gcloud container clusters get-credentials hub --location=${GCP_LOCATION}
 kubectl config set-context --current --namespace=argocd

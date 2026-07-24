@@ -9,7 +9,7 @@ its source ClusterProfile and does not authenticate to registered clusters.
 Argo CD components use the translated Secrets when accessing those clusters and
 may execute configured provider plugins to obtain credentials.
 
-## Component Model
+## Component model
 
 ```mermaid
 flowchart LR
@@ -45,7 +45,7 @@ Mounting the plugin binary into the ClusterProfile controller is unnecessary.
 The controller only writes the command path into the cluster Secret; it never
 executes that command.
 
-## Reconciliation Flow
+## Reconciliation flow
 
 ```mermaid
 sequenceDiagram
@@ -121,7 +121,7 @@ provider.
 Editing the access providers file therefore never revokes access. To revoke
 access, remove the provider entry from status.
 
-## Runtime Authentication Flow
+## Runtime authentication flow
 
 ```mermaid
 sequenceDiagram
@@ -157,7 +157,7 @@ present in one component but missing from another, the component without the
 binary will fail when it tries to use the cluster Secret, even though the
 ClusterProfile controller reconciled the Secret successfully.
 
-## Custom Provider Resolution
+## Custom provider resolution
 
 Custom providers use an access providers file. The file is read by the
 ClusterProfile controller, but the configured command is executed later by Argo
@@ -197,7 +197,7 @@ status:
         server: https://example-cluster
 ```
 
-## Cluster Information for Exec Plugins
+## Cluster information for exec plugins
 
 When `provideClusterInfo` is true, the Kubernetes exec credential protocol
 passes cluster information to the exec plugin through the `KUBERNETES_EXEC_INFO`
@@ -227,7 +227,7 @@ the ServiceAccounts of every Argo CD component that can execute the provider.
 For standard usage, that means the ServiceAccounts used by
 `argocd-application-controller` and `argocd-server`.
 
-## Built-In Providers
+## Built-in providers
 
 Access provider names with the `argo-cd-builtin-` prefix are handled without an
 access providers file. For example, `argo-cd-builtin-gcp` is translated into an
@@ -240,7 +240,7 @@ argocd-k8s-auth gcp
 This path is separate from the custom provider plugin flow. Built-in providers
 use the authentication commands available in the Argo CD runtime image.
 
-## Deployment Invariants
+## Deployment invariants
 
 The following invariants keep the integration predictable:
 
