@@ -2,11 +2,9 @@
 
 set -euo pipefail
 
-ARGOCD_CHART_VERSION="${ARGOCD_CHART_VERSION:-9.5.19}"
-# Argo CD v3.5.0 is the compatibility floor. CI exercises the required
-# exec-config behavior against the latest upstream image.
+ARGOCD_CHART_VERSION="${ARGOCD_CHART_VERSION:-10.4.0}"
 ARGOCD_IMAGE_REPOSITORY="${ARGOCD_IMAGE_REPOSITORY:-quay.io/argoproj/argocd}"
-ARGOCD_IMAGE_TAG="${ARGOCD_IMAGE_TAG:-latest}"
+ARGOCD_IMAGE_TAG="${ARGOCD_IMAGE_TAG:-v3.5.1}"
 ARGOCD_IMAGE_PULL_POLICY="${ARGOCD_IMAGE_PULL_POLICY:-Always}"
 GUESTBOOK_REVISION="${GUESTBOOK_REVISION:-8088f4c0d970abb09e250248cc97e35623447cb5}"
 E2E_IMG="${E2E_IMG:-ghcr.io/argoproj-labs/clusterprofile-integration-for-argocd:latest}"

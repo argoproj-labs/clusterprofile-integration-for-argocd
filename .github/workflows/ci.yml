@@ -204,7 +204,7 @@ jobs:
 
       - name: Setup Argo CD CLI
         env:
-          ARGOCD_CLI_VERSION: v3.4.3
+          ARGOCD_CLI_VERSION: v3.5.1
         run: |
           curl -sSL -o argocd "https://github.com/argoproj/argo-cd/releases/download/${ARGOCD_CLI_VERSION}/argocd-linux-amd64"
           curl -sSL -o cli_checksums.txt "https://github.com/argoproj/argo-cd/releases/download/${ARGOCD_CLI_VERSION}/cli_checksums.txt"
