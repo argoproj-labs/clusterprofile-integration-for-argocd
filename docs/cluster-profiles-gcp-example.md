@@ -58,6 +58,7 @@ kubectl config set-context --current --namespace=argocd
 helm repo add argo https://argoproj.github.io/argo-helm
 helm repo update argo
 helm upgrade --install argocd argo/argo-cd \
+  --version 10.4.0 \
   --set global.image.tag=v3.5.1 \
   --namespace argocd \
   --create-namespace \
