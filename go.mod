@@ -1,6 +1,6 @@
 module github.com/argoproj-labs/clusterprofile-integration-for-argocd
 
-go 1.26.3
+go 1.26.7
 
 require (
 	dario.cat/mergo v1.0.2 // indirect
