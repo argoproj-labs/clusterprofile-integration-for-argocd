@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -8,7 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -16,11 +20,15 @@ import (
 	"k8s.io/apimachinery/pkg/api/validate/content"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/tools/events"
 	clusterinventory "sigs.k8s.io/cluster-inventory-api/apis/v1alpha1"
 	"sigs.k8s.io/cluster-inventory-api/pkg/access"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/argoproj/argo-cd/v3/common"
 	v1alpha1 "github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
@@ -48,11 +56,67 @@ const (
 	builtinCloudProviderAWS   = "aws"
 	builtinCloudProviderAzure = "azure"
 	builtinCloudProviderGCP   = "gcp"
+	// Synthetic requests use an invalid object-name prefix to avoid ClusterProfile name collisions.
+	inventoryMemberRequestPrefix = "inventory-member-id:"
+	// TODO: Remove this local constant and use clusterinventory.LabelInventoryMemberIDKey after
+	// upgrading to a release that includes kubernetes-sigs/cluster-inventory-api#83.
+	inventoryMemberIDLabel = "multicluster.x-k8s.io/inventory-member-id"
+
+	eventReasonDuplicateInventoryMemberID = "DuplicateInventoryMemberID"
+	eventReasonAmbiguousInventoryMemberID = "AmbiguousInventoryMemberID"
+	eventReasonInvalidInventoryMemberID   = "InvalidInventoryMemberID"
+	eventActionResolveInventoryMember     = "ResolveInventoryMember"
 )
 
 type renderedSecret struct {
 	data     map[string][]byte
 	provider string
+}
+
+type inventoryMemberResolution string
+
+const (
+	inventoryMemberResolutionUnique    inventoryMemberResolution = "unique"
+	inventoryMemberResolutionDuplicate inventoryMemberResolution = "duplicate"
+	inventoryMemberResolutionAmbiguous inventoryMemberResolution = "ambiguous"
+)
+
+// keyedMutex serializes work for the same key while allowing different keys to proceed concurrently.
+// Entries are retained only while a caller holds or waits for the corresponding lock.
+type keyedMutex[K comparable] struct {
+	mu      sync.Mutex
+	entries map[K]*keyedMutexEntry
+}
+
+type keyedMutexEntry struct {
+	mu    sync.Mutex
+	users int
+}
+
+func (m *keyedMutex[K]) lock(key K) func() {
+	m.mu.Lock()
+	if m.entries == nil {
+		m.entries = make(map[K]*keyedMutexEntry)
+	}
+	entry := m.entries[key]
+	if entry == nil {
+		entry = &keyedMutexEntry{}
+		m.entries[key] = entry
+	}
+	entry.users++
+	m.mu.Unlock()
+
+	entry.mu.Lock()
+	return func() {
+		entry.mu.Unlock()
+
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		entry.users--
+		if entry.users == 0 {
+			delete(m.entries, key)
+		}
+	}
 }
 
 // ClusterProfileReconciler reconciles a ClusterProfile object with a corresponding Secret
@@ -64,12 +128,19 @@ type ClusterProfileReconciler struct {
 	ClusterProfileProviderFile string
 	// AccessProviders is the set of access providers used to build the kubeconfig for a ClusterProfile.
 	AccessProviders *access.Config
+	recorder        events.EventRecorder
+	memberLocks     keyedMutex[client.ObjectKey]
 }
 
 //+kubebuilder:rbac:groups=multicluster.x-k8s.io,resources=clusterprofiles,verbs=get;list;watch
 //+kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *ClusterProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	if memberID, ok := strings.CutPrefix(req.Name, inventoryMemberRequestPrefix); ok {
+		return ctrl.Result{}, r.reconcileInventoryMember(ctx, req.Namespace, memberID)
+	}
+
 	log := r.Log.WithValues("clusterprofile", req.NamespacedName)
 
 	// Fetch Cluster Profile
@@ -82,31 +153,189 @@ func (r *ClusterProfileReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
+	// Direct requests for labeled profiles must pass through member selection.
+	memberID, set := inventoryMemberID(&clusterProfile)
+	if memberID != "" {
+		return ctrl.Result{}, r.reconcileInventoryMember(ctx, clusterProfile.Namespace, memberID)
+	}
+	if set {
+		r.warnInventoryMembers(
+			[]*clusterinventory.ClusterProfile{&clusterProfile},
+			eventReasonInvalidInventoryMemberID,
+			fmt.Sprintf(
+				"label %q must be non-empty when set; treating it as absent and not deduplicating this ClusterProfile",
+				inventoryMemberIDLabel,
+			),
+		)
+	}
+
+	return ctrl.Result{}, r.reconcileClusterProfile(ctx, &clusterProfile)
+}
+
+// reconcileInventoryMember applies inventory-member selection within a namespace.
+func (r *ClusterProfileReconciler) reconcileInventoryMember(
+	ctx context.Context,
+	namespace string,
+	memberID string,
+) error {
+	unlock := r.memberLocks.lock(client.ObjectKey{Namespace: namespace, Name: memberID})
+	defer unlock()
+
+	profiles, err := r.listActiveInventoryMemberProfiles(ctx, namespace, memberID)
+	if err != nil {
+		return err
+	}
+	if len(profiles) == 0 {
+		return nil
+	}
+
+	winner, resolution := resolveInventoryMember(profiles)
+	switch resolution {
+	case inventoryMemberResolutionAmbiguous:
+		r.warnAmbiguousInventoryMember(profiles, namespace, memberID)
+		return nil
+	case inventoryMemberResolutionDuplicate:
+		r.warnDuplicateInventoryMember(profiles, winner, namespace, memberID)
+	}
+
+	return r.reconcileClusterProfile(ctx, winner)
+}
+
+func (r *ClusterProfileReconciler) listActiveInventoryMemberProfiles(
+	ctx context.Context,
+	namespace string,
+	memberID string,
+) ([]*clusterinventory.ClusterProfile, error) {
+	var clusterProfiles clusterinventory.ClusterProfileList
+	if err := r.List(
+		ctx,
+		&clusterProfiles,
+		client.InNamespace(namespace),
+		client.MatchingLabels{inventoryMemberIDLabel: memberID},
+	); err != nil {
+		return nil, fmt.Errorf("failed to list ClusterProfiles for inventory member %q: %w", memberID, err)
+	}
+
+	profiles := make([]*clusterinventory.ClusterProfile, 0, len(clusterProfiles.Items))
+	for i := range clusterProfiles.Items {
+		profile := &clusterProfiles.Items[i]
+		if profile.DeletionTimestamp.IsZero() {
+			profiles = append(profiles, profile)
+		}
+	}
+	return profiles, nil
+}
+
+// resolveInventoryMember sorts profiles for stable output; names do not break creationTimestamp ties.
+func resolveInventoryMember(
+	profiles []*clusterinventory.ClusterProfile,
+) (*clusterinventory.ClusterProfile, inventoryMemberResolution) {
+	if len(profiles) == 0 {
+		return nil, ""
+	}
+	slices.SortFunc(profiles, func(a, b *clusterinventory.ClusterProfile) int {
+		return cmp.Or(
+			a.CreationTimestamp.Compare(b.CreationTimestamp.Time),
+			strings.Compare(a.Name, b.Name),
+		)
+	})
+
+	if len(profiles) == 1 {
+		return profiles[0], inventoryMemberResolutionUnique
+	}
+	if profiles[1].CreationTimestamp.Equal(&profiles[0].CreationTimestamp) {
+		return nil, inventoryMemberResolutionAmbiguous
+	}
+	return profiles[0], inventoryMemberResolutionDuplicate
+}
+
+func (r *ClusterProfileReconciler) warnAmbiguousInventoryMember(
+	profiles []*clusterinventory.ClusterProfile,
+	namespace string,
+	memberID string,
+) {
+	r.warnInventoryMembers(profiles, eventReasonAmbiguousInventoryMemberID, fmt.Sprintf(
+		"no ClusterProfile is selected for member ID %q in inventory namespace %q because multiple ClusterProfiles "+
+			"share the oldest creationTimestamp %s",
+		memberID, namespace, profiles[0].CreationTimestamp.UTC().Format(time.RFC3339),
+	))
+}
+
+func (r *ClusterProfileReconciler) warnDuplicateInventoryMember(
+	profiles []*clusterinventory.ClusterProfile,
+	winner *clusterinventory.ClusterProfile,
+	namespace string,
+	memberID string,
+) {
+	r.warnInventoryMembers(profiles, eventReasonDuplicateInventoryMemberID, fmt.Sprintf(
+		"%d ClusterProfiles in inventory namespace %q claim member ID %q; oldest ClusterProfile %q is selected",
+		len(profiles), namespace, memberID, winner.Name,
+	))
+}
+
+// warnInventoryMembers logs one warning and records it as a Warning Event on every listed ClusterProfile.
+func (r *ClusterProfileReconciler) warnInventoryMembers(
+	profiles []*clusterinventory.ClusterProfile,
+	reason string,
+	message string,
+) {
+	names := make([]string, len(profiles))
+	for i, profile := range profiles {
+		names[i] = profile.Name
+	}
+	memberID, _ := inventoryMemberID(profiles[0])
+	r.Log.Info(
+		message,
+		"warning", true,
+		"reason", reason,
+		"namespace", profiles[0].Namespace,
+		"inventoryMemberID", memberID,
+		"clusterProfiles", names,
+	)
+	for _, profile := range profiles {
+		r.recorder.Eventf(
+			profile,
+			nil,
+			corev1.EventTypeWarning,
+			reason,
+			eventActionResolveInventoryMember,
+			"%s",
+			message,
+		)
+	}
+}
+
+func (r *ClusterProfileReconciler) reconcileClusterProfile(
+	ctx context.Context,
+	clusterProfile *clusterinventory.ClusterProfile,
+) error {
+	log := r.Log.WithValues("clusterprofile", client.ObjectKeyFromObject(clusterProfile))
+
 	// Garbage collection removes the owned Secret, so deletion needs no work here.
 	if !clusterProfile.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, nil
+		return nil
 	}
 
 	// If the ClusterProfile no longer advertises access, prune the Secret it owns.
 	if len(clusterProfile.Status.CredentialProviders)+len(clusterProfile.Status.AccessProviders) == 0 {
-		if err := r.pruneSecret(ctx, &clusterProfile); err != nil {
+		if err := r.pruneSecret(ctx, clusterProfile); err != nil {
 			log.Error(err, "unable to remove secret after ClusterProfile access was revoked")
-			return ctrl.Result{}, err
+			return err
 		}
-		return ctrl.Result{}, nil
+		return nil
 	}
 
-	rendered, err := r.renderSecret(&clusterProfile)
+	rendered, err := r.renderSecret(clusterProfile)
 	if err != nil {
-		if handleErr := r.handleOwnedSecretAfterRenderFailure(ctx, &clusterProfile); handleErr != nil {
+		if handleErr := r.handleOwnedSecretAfterRenderFailure(ctx, clusterProfile); handleErr != nil {
 			err = errors.Join(err, handleErr)
 		}
 		log.Error(err, "unable to render secret for ClusterProfile")
-		return ctrl.Result{}, err
+		return err
 	}
 
 	// Create or update the secret in the ClusterProfile's namespace.
-	key := clusterProfileSecretKey(&clusterProfile)
+	key := clusterProfileSecretKey(clusterProfile)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      key.Name,
@@ -114,14 +343,14 @@ func (r *ClusterProfileReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		},
 	}
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
-		return r.mutateSecret(secret, &clusterProfile, rendered)
+		return r.mutateSecret(secret, clusterProfile, rendered)
 	})
 	if err != nil {
 		log.Error(err, "unable to create or update secret for ClusterProfile")
-		return ctrl.Result{}, err
+		return err
 	}
 
-	return ctrl.Result{}, nil
+	return nil
 }
 
 // handleOwnedSecretAfterRenderFailure prunes the generated Secret once the access provider that
@@ -495,6 +724,44 @@ func cloneAccessConfig(config *access.Config) *access.Config {
 	return clone
 }
 
+// inventoryMemberID returns the label value and whether the label is present.
+func inventoryMemberID(object client.Object) (string, bool) {
+	memberID, set := object.GetLabels()[inventoryMemberIDLabel]
+	return memberID, set
+}
+
+// inventoryMemberRequest groups labeled profiles and maps unlabeled profiles to their object key.
+func inventoryMemberRequest(_ context.Context, clusterProfile client.Object) []reconcile.Request {
+	key := client.ObjectKeyFromObject(clusterProfile)
+	if memberID, _ := inventoryMemberID(clusterProfile); memberID != "" {
+		key.Name = inventoryMemberRequestPrefix + memberID
+	}
+	return []reconcile.Request{{NamespacedName: key}}
+}
+
+// ownedSecretRequests maps a Secret to its owner's member group, falling back to the owner key
+// while the ClusterProfile is absent from the cache.
+func (r *ClusterProfileReconciler) ownedSecretRequests(ctx context.Context, secret client.Object) []reconcile.Request {
+	owner := metav1.GetControllerOf(secret)
+	if owner == nil || owner.Kind != "ClusterProfile" {
+		return nil
+	}
+	if ownerGV, err := schema.ParseGroupVersion(owner.APIVersion); err != nil ||
+		ownerGV.Group != clusterinventory.GroupVersion.Group {
+		return nil
+	}
+	key := client.ObjectKey{Namespace: secret.GetNamespace(), Name: owner.Name}
+	var clusterProfile clusterinventory.ClusterProfile
+	if err := r.Get(ctx, key, &clusterProfile); err != nil {
+		if !apierrors.IsNotFound(err) {
+			r.Log.Error(err, "unable to map owned Secret to its inventory member",
+				"secret", client.ObjectKeyFromObject(secret), "clusterProfile", key)
+		}
+		return []reconcile.Request{{NamespacedName: key}}
+	}
+	return inventoryMemberRequest(ctx, &clusterProfile)
+}
+
 func (r *ClusterProfileReconciler) loadClusterProfileProviderFile() error {
 	// TODO: do we need to reload periodically? (unlikely)
 	if r.ClusterProfileProviderFile == "" {
@@ -514,8 +781,10 @@ func (r *ClusterProfileReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err := r.loadClusterProfileProviderFile(); err != nil {
 		return err
 	}
+	r.recorder = mgr.GetEventRecorder(cliName)
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&clusterinventory.ClusterProfile{}).
-		Owns(&corev1.Secret{}).
+		Named("clusterprofile").
+		Watches(&clusterinventory.ClusterProfile{}, handler.EnqueueRequestsFromMapFunc(inventoryMemberRequest)).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.ownedSecretRequests)).
 		Complete(r)
 }

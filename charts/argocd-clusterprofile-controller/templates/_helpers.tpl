@@ -109,8 +109,8 @@ ClusterRole name used when watching ClusterProfiles in all namespaces.
 {{- end }}
 
 {{/*
-Permissions required in every namespace watched for ClusterProfiles: read ClusterProfiles
-and manage the generated cluster Secrets.
+Permissions required in every namespace watched for ClusterProfiles: read ClusterProfiles,
+manage the generated cluster Secrets, and publish Warning Events on ClusterProfiles.
 */}}
 {{- define "argocd-clusterprofile-controller.watchedNamespaceRules" -}}
 - apiGroups:
@@ -133,6 +133,13 @@ and manage the generated cluster Secrets.
     - patch
     - update
     - watch
+- apiGroups:
+    - events.k8s.io
+  resources:
+    - events
+  verbs:
+    - create
+    - patch
 {{- end }}
 
 {{/*

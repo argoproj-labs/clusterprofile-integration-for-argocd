@@ -45,6 +45,13 @@ OUT_OF_CLUSTER_SERVER="https://explicit-kubeconfig.example.com:6443"
 REMOTE_ONLY_CP_NAME="remote-only-rbac"
 REMOTE_ONLY_SECRET_NAME="cluster-${REMOTE_ONLY_CP_NAME}"
 REMOTE_ONLY_SERVER="https://remote-only.example.com:6443"
+DUPLICATE_MEMBER_ID="inventory-member-e2e"
+DUPLICATE_OLDEST_CP_NAME="inventory-member-primary"
+DUPLICATE_NEWER_CP_NAME="inventory-member-duplicate"
+DUPLICATE_MIRROR_CP_NAME="inventory-member-mirror"
+DUPLICATE_OLDEST_SECRET_NAME="cluster-${DUPLICATE_OLDEST_CP_NAME}"
+DUPLICATE_NEWER_SECRET_NAME="cluster-${DUPLICATE_NEWER_CP_NAME}"
+DUPLICATE_MIRROR_SECRET_NAME="cluster-${DUPLICATE_MIRROR_CP_NAME}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -475,10 +482,29 @@ long_name_secret_is_ready() {
      (.data.server | @base64d) == $server' <<<"${secret_json}" >/dev/null
 }
 
-secret_is_gone() {
+secret_exists() {
   local namespace="$1" secret_name="$2"
-  ! kubectl --context "kind-${HUB_CLUSTER}" -n "${namespace}" \
+  kubectl --context "kind-${HUB_CLUSTER}" -n "${namespace}" \
     get secret "${secret_name}" >/dev/null 2>&1
+}
+
+secret_is_gone() {
+  ! secret_exists "$@"
+}
+
+assert_secret_exists() {
+  local namespace="$1" secret_name="$2"
+  if ! secret_exists "${namespace}" "${secret_name}"; then
+    echo "Secret ${namespace}/${secret_name} unexpectedly does not exist" >&2
+    exit 1
+  fi
+}
+
+inventory_warning_is_recorded() {
+  local namespace="$1" profile_name="$2" reason="$3"
+  kubectl --context "kind-${HUB_CLUSTER}" -n "${namespace}" get events.events.k8s.io -o json \
+    --field-selector "reason=${reason},regarding.apiVersion=multicluster.x-k8s.io/v1alpha1,regarding.kind=ClusterProfile,regarding.name=${profile_name}" |
+    jq -e 'any(.items[]; .type == "Warning")' >/dev/null
 }
 
 clusterprofile_owned_secrets_are_gone() {
@@ -515,6 +541,23 @@ set_builtin_profile_access() {
         ]
       }
     }" >/dev/null
+}
+
+apply_inventory_member_profile() {
+  local profile_name="$1" namespace="${2:-${ARGOCD_NS}}"
+  kubectl --context "kind-${HUB_CLUSTER}" apply -f - <<EOF
+apiVersion: multicluster.x-k8s.io/v1alpha1
+kind: ClusterProfile
+metadata:
+  name: ${profile_name}
+  namespace: ${namespace}
+  labels:
+    multicluster.x-k8s.io/inventory-member-id: ${DUPLICATE_MEMBER_ID}
+spec:
+  clusterManager:
+    name: manual
+EOF
+  set_builtin_profile_access "${profile_name}" "https://${profile_name}.example.com:6443" "${namespace}"
 }
 
 build_live_status_patch() {
@@ -1322,6 +1365,8 @@ for namespace in "${ARGOCD_NS}" "${MIRROR_NS}"; do
   for verb in create update patch delete; do
     assert_cannot_i "${verb}" clusterprofiles.multicluster.x-k8s.io --namespace "${namespace}"
   done
+  assert_can_i create events.events.k8s.io --namespace "${namespace}"
+  assert_can_i patch events.events.k8s.io --namespace "${namespace}"
 done
 assert_can_i create events --namespace "${ARGOCD_NS}"
 assert_can_i patch events --namespace "${ARGOCD_NS}"
@@ -1335,6 +1380,7 @@ for resource in applications.argoproj.io appprojects.argoproj.io configmaps; do
 done
 for verb in get list watch update delete; do
   assert_cannot_i "${verb}" events --namespace "${ARGOCD_NS}"
+  assert_cannot_i "${verb}" events.events.k8s.io --namespace "${ARGOCD_NS}"
 done
 for verb in list watch patch delete; do
   assert_cannot_i "${verb}" leases.coordination.k8s.io --namespace "${ARGOCD_NS}"
@@ -1343,7 +1389,7 @@ for verb in get update; do
   assert_cannot_i "${verb}" leases.coordination.k8s.io/not-the-controller-lock --namespace "${ARGOCD_NS}"
 done
 if [ "${E2E_INSTALL_METHOD}" = "helm" ]; then
-  for resource in clusterprofiles.multicluster.x-k8s.io secrets; do
+  for resource in clusterprofiles.multicluster.x-k8s.io secrets events.events.k8s.io; do
     for verb in get list watch create update patch delete; do
       assert_cannot_i "${verb}" "${resource}" --namespace "${RBAC_UNWATCHED_NS}"
     done
@@ -1799,6 +1845,69 @@ for secret_name in \
   fi
 done
 
+log "verifying inventory-scoped duplicate member selection"
+apply_inventory_member_profile "${DUPLICATE_OLDEST_CP_NAME}"
+apply_inventory_member_profile "${DUPLICATE_MIRROR_CP_NAME}" "${MIRROR_NS}"
+if ! retry_until 120 "inventory member Secret ${ARGOCD_NS}/${DUPLICATE_OLDEST_SECRET_NAME}" \
+  secret_exists "${ARGOCD_NS}" "${DUPLICATE_OLDEST_SECRET_NAME}"; then
+  echo "controller did not create inventory member Secret ${ARGOCD_NS}/${DUPLICATE_OLDEST_SECRET_NAME}" >&2
+  exit 1
+fi
+if ! retry_until 120 "inventory member Secret ${MIRROR_NS}/${DUPLICATE_MIRROR_SECRET_NAME}" \
+  secret_exists "${MIRROR_NS}" "${DUPLICATE_MIRROR_SECRET_NAME}"; then
+  echo "controller did not create inventory member Secret ${MIRROR_NS}/${DUPLICATE_MIRROR_SECRET_NAME}" >&2
+  exit 1
+fi
+
+# Kubernetes creation timestamps can have coarse precision. Keep the intended winner unambiguous.
+sleep 2
+apply_inventory_member_profile "${DUPLICATE_NEWER_CP_NAME}"
+if ! retry_until 120 "duplicate inventory member Warning Event" \
+  inventory_warning_is_recorded \
+    "${ARGOCD_NS}" \
+    "${DUPLICATE_NEWER_CP_NAME}" \
+    "DuplicateInventoryMemberID"; then
+  echo "controller did not publish the duplicate inventory member Warning Event" >&2
+  exit 1
+fi
+if ! retry_until 120 "newer duplicate inventory member Secret absence" \
+  secret_is_gone "${ARGOCD_NS}" "${DUPLICATE_NEWER_SECRET_NAME}"; then
+  echo "newer duplicate ClusterProfile unexpectedly received an Argo CD Secret" >&2
+  exit 1
+fi
+assert_secret_exists "${ARGOCD_NS}" "${DUPLICATE_OLDEST_SECRET_NAME}"
+assert_secret_exists "${MIRROR_NS}" "${DUPLICATE_MIRROR_SECRET_NAME}"
+
+log "deleting the selected member and verifying next-oldest election"
+kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" \
+  delete clusterprofile "${DUPLICATE_OLDEST_CP_NAME}" --wait=true --timeout=60s
+if ! retry_until 120 "next-oldest inventory member Secret" \
+  secret_exists "${ARGOCD_NS}" "${DUPLICATE_NEWER_SECRET_NAME}"; then
+  echo "controller did not elect the next-oldest ClusterProfile" >&2
+  exit 1
+fi
+if ! retry_until 120 "oldest inventory member Secret garbage collection" \
+  secret_is_gone "${ARGOCD_NS}" "${DUPLICATE_OLDEST_SECRET_NAME}"; then
+  echo "deleted inventory winner's Secret was not garbage collected" >&2
+  exit 1
+fi
+assert_secret_exists "${MIRROR_NS}" "${DUPLICATE_MIRROR_SECRET_NAME}"
+
+kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" \
+  delete clusterprofile "${DUPLICATE_NEWER_CP_NAME}" --wait=true --timeout=60s
+kubectl --context "kind-${HUB_CLUSTER}" -n "${MIRROR_NS}" \
+  delete clusterprofile "${DUPLICATE_MIRROR_CP_NAME}" --wait=true --timeout=60s
+if ! retry_until 120 "duplicate fixture Secret garbage collection" \
+  secret_is_gone "${ARGOCD_NS}" "${DUPLICATE_NEWER_SECRET_NAME}"; then
+  echo "duplicate fixture Secret ${ARGOCD_NS}/${DUPLICATE_NEWER_SECRET_NAME} was not garbage collected" >&2
+  exit 1
+fi
+if ! retry_until 120 "duplicate fixture Secret garbage collection" \
+  secret_is_gone "${MIRROR_NS}" "${DUPLICATE_MIRROR_SECRET_NAME}"; then
+  echo "duplicate fixture Secret ${MIRROR_NS}/${DUPLICATE_MIRROR_SECRET_NAME} was not garbage collected" >&2
+  exit 1
+fi
+
 log "creating ClusterProfile"
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" apply -f - <<EOF
 apiVersion: multicluster.x-k8s.io/v1alpha1
@@ -2119,6 +2228,14 @@ if [ "${E2E_INSTALL_METHOD}" = "helm" ]; then
   done
   for verb in create update patch delete; do
     assert_cannot_i "${verb}" clusterprofiles.multicluster.x-k8s.io --namespace "${MIRROR_NS}"
+  done
+  for verb in get list watch create update patch delete; do
+    assert_cannot_i "${verb}" events.events.k8s.io --namespace "${ARGOCD_NS}"
+  done
+  assert_can_i create events.events.k8s.io --namespace "${MIRROR_NS}"
+  assert_can_i patch events.events.k8s.io --namespace "${MIRROR_NS}"
+  for verb in get list watch update delete; do
+    assert_cannot_i "${verb}" events.events.k8s.io --namespace "${MIRROR_NS}"
   done
 
   log "verifying remote-only reconciliation and recovery from a current provider error"

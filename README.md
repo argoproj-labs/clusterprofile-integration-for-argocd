@@ -27,6 +27,8 @@ kind: ClusterProfile
 metadata:
   name: my-cluster
   namespace: argocd
+  labels:
+    multicluster.x-k8s.io/inventory-member-id: prod-us-east-1
 spec:
   clusterManager:
     name: my-cluster-profile-controller
@@ -51,6 +53,11 @@ Generated `Secret`s are labeled with `argocd.argoproj.io/secret-type: cluster` a
 Because Argo CD reads cluster `Secret`s only from its own namespace, create each `ClusterProfile` in the namespace of the Argo CD instance that should manage the cluster.
 
 One shared controller can watch several namespaces (see `--cluster-profile-namespaces`) and serve one Argo CD instance per team namespace.
+
+Use the `multicluster.x-k8s.io/inventory-member-id` label to identify
+ClusterProfiles that represent the same member cluster. Set it to a stable,
+non-empty value; values are compared only within a namespace. See
+[inventory member selection](docs/ARCHITECTURE.md#inventory-member-selection).
 
 ### Authentication
 

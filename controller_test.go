@@ -27,6 +27,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	clientcmdv1 "k8s.io/client-go/tools/clientcmd/api/v1"
+	"k8s.io/client-go/tools/events"
 	clusterinventory "sigs.k8s.io/cluster-inventory-api/apis/v1alpha1"
 	"sigs.k8s.io/cluster-inventory-api/pkg/access"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -105,6 +106,33 @@ func (c *patchConflictClient) Patch(
 	)
 }
 
+type blockingClusterProfileListClient struct {
+	client.Client
+	entered chan<- struct{}
+	release <-chan struct{}
+}
+
+func (c *blockingClusterProfileListClient) List(
+	ctx context.Context,
+	list client.ObjectList,
+	options ...client.ListOption,
+) error {
+	if _, ok := list.(*clusterinventory.ClusterProfileList); !ok {
+		return c.Client.List(ctx, list, options...)
+	}
+	select {
+	case c.entered <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-c.release:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return c.Client.List(ctx, list, options...)
+}
+
 func newTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 
@@ -128,9 +156,14 @@ func secretKey(namespace string) types.NamespacedName {
 
 func getSecret(t *testing.T, r *ClusterProfileReconciler, namespace string) *corev1.Secret {
 	t.Helper()
+	return getSecretByKey(t, r, secretKey(namespace))
+}
+
+func getSecretByKey(t *testing.T, r *ClusterProfileReconciler, key types.NamespacedName) *corev1.Secret {
+	t.Helper()
 
 	secret := &corev1.Secret{}
-	require.NoError(t, r.Get(context.Background(), secretKey(namespace), secret))
+	require.NoError(t, r.Get(context.Background(), key, secret))
 	return secret
 }
 
@@ -184,6 +217,38 @@ func newCustomProviderClusterProfile(labels map[string]string) *clusterinventory
 	})
 }
 
+func newInventoryClusterProfile(
+	name string,
+	namespace string,
+	memberID string,
+	createdAt time.Time,
+) *clusterinventory.ClusterProfile {
+	profile := newBuiltinProviderClusterProfile(map[string]string{
+		inventoryMemberIDLabel: memberID,
+	})
+	profile.Name = name
+	profile.Namespace = namespace
+	profile.UID = types.UID(name + "-uid")
+	profile.CreationTimestamp = metav1.NewTime(createdAt)
+	profile.Status.AccessProviders[0].Cluster.Server = "https://" + name + ".example.com"
+	return profile
+}
+
+func inventoryRequest(namespace, memberID string) reconcile.Request {
+	return reconcile.Request{NamespacedName: types.NamespacedName{
+		Namespace: namespace,
+		Name:      inventoryMemberRequestPrefix + memberID,
+	}}
+}
+
+func requireRecordedEvents(t *testing.T, recorder *events.FakeRecorder, count int, reason string) {
+	t.Helper()
+	require.Len(t, recorder.Events, count)
+	for range count {
+		assert.Contains(t, <-recorder.Events, corev1.EventTypeWarning+" "+reason)
+	}
+}
+
 func clusterProfileOwnerReference(name string, uid types.UID) metav1.OwnerReference {
 	controller := true
 	blockOwnerDeletion := false
@@ -203,7 +268,7 @@ func newControlledSecret(
 ) *corev1.Secret {
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            testSecretName,
+			Name:            clusterProfileSecretName(clusterProfile.Name),
 			Namespace:       clusterProfile.Namespace,
 			UID:             uid,
 			ResourceVersion: "42",
@@ -509,6 +574,351 @@ func TestEffectiveAccessProviderSelection(t *testing.T) {
 		require.NotNil(t, selected)
 		assert.Equal(t, testProviderName, selected.Name)
 		assert.Equal(t, testServer, selected.Cluster.Server)
+	})
+}
+
+func TestResolveInventoryMember(t *testing.T) {
+	createdAt := time.Date(2026, time.September, 1, 12, 0, 0, 0, time.UTC)
+	oldest := newInventoryClusterProfile("oldest", testNamespace, "member", createdAt)
+	newer := newInventoryClusterProfile("newer", testNamespace, "member", createdAt.Add(time.Minute))
+
+	tests := []struct {
+		name           string
+		profiles       []*clusterinventory.ClusterProfile
+		wantWinner     *clusterinventory.ClusterProfile
+		wantResolution inventoryMemberResolution
+	}{
+		{
+			name:           "no profiles",
+			wantResolution: "",
+		},
+		{
+			name:           "one profile",
+			profiles:       []*clusterinventory.ClusterProfile{oldest},
+			wantWinner:     oldest,
+			wantResolution: inventoryMemberResolutionUnique,
+		},
+		{
+			name:           "unique oldest profile",
+			profiles:       []*clusterinventory.ClusterProfile{newer, oldest},
+			wantWinner:     oldest,
+			wantResolution: inventoryMemberResolutionDuplicate,
+		},
+		{
+			name: "tied oldest profiles",
+			profiles: []*clusterinventory.ClusterProfile{
+				newInventoryClusterProfile("second", testNamespace, "member", createdAt),
+				newer,
+				newInventoryClusterProfile("first", testNamespace, "member", createdAt),
+			},
+			wantResolution: inventoryMemberResolutionAmbiguous,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			winner, resolution := resolveInventoryMember(tt.profiles)
+
+			assert.Same(t, tt.wantWinner, winner)
+			assert.Equal(t, tt.wantResolution, resolution)
+		})
+	}
+}
+
+func TestInventoryMemberReconciliation(t *testing.T) {
+	const memberID = "member-us-east-1"
+	createdAt := time.Date(2026, time.September, 1, 12, 0, 0, 0, time.UTC)
+	scheme := newTestScheme(t)
+	newReconciler := func(objects ...client.Object) (*ClusterProfileReconciler, *events.FakeRecorder) {
+		recorder := events.NewFakeRecorder(8)
+		return &ClusterProfileReconciler{
+			Client:   fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build(),
+			Log:      logr.Discard(),
+			Scheme:   scheme,
+			recorder: recorder,
+		}, recorder
+	}
+
+	t.Run("selects the unique oldest ClusterProfile without reconciling newer duplicates", func(t *testing.T) {
+		oldest := newInventoryClusterProfile("oldest", testNamespace, memberID, createdAt)
+		newer := newInventoryClusterProfile("newer", testNamespace, memberID, createdAt.Add(time.Minute))
+		r, recorder := newReconciler(oldest, newer)
+
+		_, err := r.Reconcile(context.Background(), inventoryRequest(testNamespace, memberID))
+
+		require.NoError(t, err)
+		assert.Equal(t, oldest.Name, string(getSecretByKey(t, r, clusterProfileSecretKey(oldest)).Data[secretDataNameKey]))
+		requireNoSecret(t, r, clusterProfileSecretKey(newer))
+		requireRecordedEvents(t, recorder, 2, eventReasonDuplicateInventoryMemberID)
+	})
+
+	t.Run("leaves an existing newer duplicate Secret unchanged", func(t *testing.T) {
+		oldest := newInventoryClusterProfile("oldest", testNamespace, memberID, createdAt)
+		newer := newInventoryClusterProfile("newer", testNamespace, memberID, createdAt.Add(time.Minute))
+		newerSecret := newControlledSecret(newer, "newer-secret-uid")
+		r, _ := newReconciler(oldest, newer, newerSecret)
+
+		_, err := r.Reconcile(context.Background(), inventoryRequest(testNamespace, memberID))
+
+		require.NoError(t, err)
+		getSecretByKey(t, r, clusterProfileSecretKey(oldest))
+		actual := getSecretByKey(t, r, clusterProfileSecretKey(newer))
+		assert.Equal(t, newerSecret.ResourceVersion, actual.ResourceVersion)
+		assert.Equal(t, newerSecret.Labels, actual.Labels)
+		assert.Equal(t, newerSecret.OwnerReferences, actual.OwnerReferences)
+		assert.Equal(t, newerSecret.Data, actual.Data)
+	})
+
+	t.Run("ignores terminating ClusterProfiles during member selection", func(t *testing.T) {
+		terminating := newInventoryClusterProfile("terminating", testNamespace, memberID, createdAt)
+		terminating.Finalizers = []string{"test.example.com/finalizer"}
+		deletedAt := metav1.NewTime(createdAt.Add(2 * time.Minute))
+		terminating.DeletionTimestamp = &deletedAt
+		active := newInventoryClusterProfile("active", testNamespace, memberID, createdAt.Add(time.Minute))
+		r, recorder := newReconciler(terminating, active)
+
+		_, err := r.Reconcile(context.Background(), inventoryRequest(testNamespace, memberID))
+
+		require.NoError(t, err)
+		requireNoSecret(t, r, clusterProfileSecretKey(terminating))
+		assert.True(t, metav1.IsControlledBy(getSecretByKey(t, r, clusterProfileSecretKey(active)), active))
+		assert.Empty(t, recorder.Events)
+	})
+
+	t.Run("leaves member Secrets unchanged when the oldest creationTimestamp is tied", func(t *testing.T) {
+		first := newInventoryClusterProfile("first", testNamespace, memberID, createdAt)
+		second := newInventoryClusterProfile("second", testNamespace, memberID, createdAt)
+		later := newInventoryClusterProfile("later", testNamespace, memberID, createdAt.Add(time.Minute))
+		profiles := []*clusterinventory.ClusterProfile{first, second, later}
+		objects := make([]client.Object, 0, len(profiles)+1)
+		for _, profile := range profiles {
+			objects = append(objects, profile)
+		}
+		laterSecret := newControlledSecret(later, "later-secret-uid")
+		objects = append(objects, laterSecret)
+		r, recorder := newReconciler(objects...)
+
+		_, err := r.Reconcile(context.Background(), inventoryRequest(testNamespace, memberID))
+
+		require.NoError(t, err)
+		requireNoSecret(t, r, clusterProfileSecretKey(first))
+		requireNoSecret(t, r, clusterProfileSecretKey(second))
+		actual := getSecretByKey(t, r, clusterProfileSecretKey(later))
+		assert.Equal(t, laterSecret.ResourceVersion, actual.ResourceVersion)
+		assert.Equal(t, laterSecret.Labels, actual.Labels)
+		assert.Equal(t, laterSecret.OwnerReferences, actual.OwnerReferences)
+		assert.Equal(t, laterSecret.Data, actual.Data)
+		requireRecordedEvents(t, recorder, 3, eventReasonAmbiguousInventoryMemberID)
+	})
+
+	t.Run("treats the same member ID in different namespaces independently", func(t *testing.T) {
+		teamA := newInventoryClusterProfile("shared-cluster", teamANamespace, memberID, createdAt)
+		teamB := newInventoryClusterProfile("shared-cluster", teamBNamespace, memberID, createdAt)
+		r, _ := newReconciler(teamA, teamB)
+
+		_, err := r.Reconcile(context.Background(), inventoryRequest(teamANamespace, memberID))
+		require.NoError(t, err)
+		_, err = r.Reconcile(context.Background(), inventoryRequest(teamBNamespace, memberID))
+
+		require.NoError(t, err)
+		for _, profile := range []*clusterinventory.ClusterProfile{teamA, teamB} {
+			assert.True(t, metav1.IsControlledBy(getSecretByKey(t, r, clusterProfileSecretKey(profile)), profile))
+		}
+	})
+
+	t.Run("does not correlate absent and empty member IDs", func(t *testing.T) {
+		absentProfile := newInventoryClusterProfile("without-id", testNamespace, "", createdAt)
+		delete(absentProfile.Labels, inventoryMemberIDLabel)
+		emptyProfile := newInventoryClusterProfile("empty-id", testNamespace, "", createdAt)
+		r, recorder := newReconciler(absentProfile, emptyProfile)
+
+		for _, profile := range []*clusterinventory.ClusterProfile{absentProfile, emptyProfile} {
+			_, err := r.Reconcile(context.Background(), reconcile.Request{
+				NamespacedName: client.ObjectKeyFromObject(profile),
+			})
+			require.NoError(t, err)
+			getSecretByKey(t, r, clusterProfileSecretKey(profile))
+		}
+		requireRecordedEvents(t, recorder, 1, eventReasonInvalidInventoryMemberID)
+	})
+
+	t.Run("elects the next-oldest ClusterProfile after the winner is deleted", func(t *testing.T) {
+		oldest := newInventoryClusterProfile("oldest", testNamespace, memberID, createdAt)
+		newer := newInventoryClusterProfile("newer", testNamespace, memberID, createdAt.Add(time.Minute))
+		r, _ := newReconciler(oldest, newer)
+
+		_, err := r.Reconcile(context.Background(), inventoryRequest(testNamespace, memberID))
+		require.NoError(t, err)
+		oldestSecret := getSecretByKey(t, r, clusterProfileSecretKey(oldest))
+		require.NoError(t, r.Delete(context.Background(), oldest))
+		// The fake client does not run Kubernetes garbage collection, so simulate owner cleanup.
+		require.NoError(t, r.Delete(context.Background(), oldestSecret))
+
+		_, err = r.Reconcile(context.Background(), inventoryRequest(testNamespace, memberID))
+
+		require.NoError(t, err)
+		assert.True(t, metav1.IsControlledBy(getSecretByKey(t, r, clusterProfileSecretKey(newer)), newer))
+	})
+
+	t.Run("reconciles both inventories when a member ID changes or is removed", func(t *testing.T) {
+		originalMemberID := "member-original"
+		newMemberID := "member-new"
+		moving := newInventoryClusterProfile("moving", testNamespace, originalMemberID, createdAt)
+		remaining := newInventoryClusterProfile(
+			"remaining",
+			testNamespace,
+			originalMemberID,
+			createdAt.Add(time.Minute),
+		)
+		r, _ := newReconciler(moving, remaining)
+
+		_, err := r.Reconcile(context.Background(), inventoryRequest(testNamespace, originalMemberID))
+		require.NoError(t, err)
+		requireNoSecret(t, r, clusterProfileSecretKey(remaining))
+
+		// A label change enqueues both the old and the new member group; reconcile them in that order.
+		movingKey := client.ObjectKeyFromObject(moving)
+		updateProfile(t, r, movingKey, func(profile *clusterinventory.ClusterProfile) {
+			profile.Labels[inventoryMemberIDLabel] = newMemberID
+		})
+		_, err = r.Reconcile(context.Background(), inventoryRequest(testNamespace, originalMemberID))
+		require.NoError(t, err)
+		_, err = r.Reconcile(context.Background(), inventoryRequest(testNamespace, newMemberID))
+		require.NoError(t, err)
+		for _, profile := range []*clusterinventory.ClusterProfile{moving, remaining} {
+			getSecretByKey(t, r, clusterProfileSecretKey(profile))
+		}
+
+		updateProfile(t, r, movingKey, func(profile *clusterinventory.ClusterProfile) {
+			delete(profile.Labels, inventoryMemberIDLabel)
+		})
+		_, err = r.Reconcile(context.Background(), inventoryRequest(testNamespace, newMemberID))
+		require.NoError(t, err)
+		_, err = r.Reconcile(context.Background(), reconcile.Request{NamespacedName: movingKey})
+		require.NoError(t, err)
+		movingSecret := getSecretByKey(t, r, clusterProfileSecretKey(moving))
+		assert.NotContains(t, movingSecret.Labels, inventoryMemberIDLabel)
+	})
+
+	t.Run("maps a ClusterProfile to a namespace-scoped member request", func(t *testing.T) {
+		profile := newInventoryClusterProfile("profile", teamANamespace, memberID, createdAt)
+
+		requests := inventoryMemberRequest(context.Background(), profile)
+
+		assert.Equal(t, []reconcile.Request{inventoryRequest(teamANamespace, memberID)}, requests)
+		delete(profile.Labels, inventoryMemberIDLabel)
+		assert.Equal(t, []reconcile.Request{{NamespacedName: client.ObjectKeyFromObject(profile)}},
+			inventoryMemberRequest(context.Background(), profile))
+		profile.Labels[inventoryMemberIDLabel] = ""
+		assert.Equal(t, []reconcile.Request{{NamespacedName: client.ObjectKeyFromObject(profile)}},
+			inventoryMemberRequest(context.Background(), profile))
+	})
+
+	t.Run("maps an owned Secret to the request of its controlling ClusterProfile", func(t *testing.T) {
+		profile := newInventoryClusterProfile("profile", teamANamespace, memberID, createdAt)
+		r, _ := newReconciler(profile)
+		secret := newControlledSecret(profile, "profile-secret-uid")
+
+		assert.Equal(t, []reconcile.Request{inventoryRequest(teamANamespace, memberID)},
+			r.ownedSecretRequests(context.Background(), secret))
+
+		assert.Nil(t, r.ownedSecretRequests(context.Background(), newUnownedSecret(teamANamespace, "unowned", nil, nil)))
+		foreignOwner := clusterProfileOwnerReference(profile.Name, profile.UID)
+		foreignOwner.APIVersion = "other.example.com/v1alpha1"
+		assert.Nil(t, r.ownedSecretRequests(context.Background(), newUnownedSecret(
+			teamANamespace, "foreign", nil, []metav1.OwnerReference{foreignOwner},
+		)))
+
+		// Without a readable owner the Secret falls back to the owner's name, which Reconcile then re-reads.
+		require.NoError(t, r.Delete(context.Background(), profile))
+		assert.Equal(t, []reconcile.Request{{NamespacedName: client.ObjectKeyFromObject(profile)}},
+			r.ownedSecretRequests(context.Background(), secret))
+	})
+
+	t.Run("serializes different request keys for the same inventory member", func(t *testing.T) {
+		profile := newInventoryClusterProfile("profile", testNamespace, memberID, createdAt)
+		r, _ := newReconciler(profile)
+		entered := make(chan struct{}, 2)
+		release := make(chan struct{}, 2)
+		r.Client = &blockingClusterProfileListClient{Client: r.Client, entered: entered, release: release}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		errs := make(chan error, 2)
+		reconcileAsync := func(request reconcile.Request) {
+			_, err := r.Reconcile(ctx, request)
+			errs <- err
+		}
+
+		go reconcileAsync(inventoryRequest(testNamespace, memberID))
+		select {
+		case <-entered:
+		case <-ctx.Done():
+			require.FailNow(t, "first inventory member reconciliation did not start", ctx.Err())
+		}
+
+		go reconcileAsync(reconcile.Request{NamespacedName: client.ObjectKeyFromObject(profile)})
+		lockKey := client.ObjectKey{Namespace: testNamespace, Name: memberID}
+		require.Eventually(t, func() bool {
+			r.memberLocks.mu.Lock()
+			defer r.memberLocks.mu.Unlock()
+			entry := r.memberLocks.entries[lockKey]
+			return entry != nil && entry.users == 2
+		}, time.Second, time.Millisecond)
+		select {
+		case <-entered:
+			require.FailNow(t, "same inventory member reconciled concurrently")
+		default:
+		}
+
+		release <- struct{}{}
+		select {
+		case <-entered:
+		case <-ctx.Done():
+			require.FailNow(t, "waiting inventory member reconciliation did not resume", ctx.Err())
+		}
+		release <- struct{}{}
+		for range 2 {
+			require.NoError(t, <-errs)
+		}
+
+		r.memberLocks.mu.Lock()
+		defer r.memberLocks.mu.Unlock()
+		assert.Empty(t, r.memberLocks.entries)
+	})
+
+	t.Run("reconciles different inventory members concurrently", func(t *testing.T) {
+		otherMemberID := "member-eu-west-1"
+		first := newInventoryClusterProfile("first", testNamespace, memberID, createdAt)
+		second := newInventoryClusterProfile("second", testNamespace, otherMemberID, createdAt)
+		r, _ := newReconciler(first, second)
+		entered := make(chan struct{}, 2)
+		release := make(chan struct{}, 2)
+		r.Client = &blockingClusterProfileListClient{Client: r.Client, entered: entered, release: release}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		errs := make(chan error, 2)
+		for _, request := range []reconcile.Request{
+			inventoryRequest(testNamespace, memberID),
+			inventoryRequest(testNamespace, otherMemberID),
+		} {
+			go func() {
+				_, err := r.Reconcile(ctx, request)
+				errs <- err
+			}()
+		}
+
+		for range 2 {
+			select {
+			case <-entered:
+			case <-ctx.Done():
+				require.FailNow(t, "different inventory members did not reconcile concurrently", ctx.Err())
+			}
+		}
+		release <- struct{}{}
+		release <- struct{}{}
+		for range 2 {
+			require.NoError(t, <-errs)
+		}
 	})
 }
 

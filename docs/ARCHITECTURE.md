@@ -45,6 +45,28 @@ Mounting the plugin binary into the ClusterProfile controller is unnecessary.
 The controller only writes the command path into the cluster Secret; it never
 executes that command.
 
+## Inventory member selection
+
+Each namespace is a separate cluster inventory. Within a namespace, the
+controller groups ClusterProfiles by a non-empty
+`multicluster.x-k8s.io/inventory-member-id` label.
+
+| Non-terminating ClusterProfiles with the same member ID | Controller behavior |
+| --- | --- |
+| One | Reconcile it. |
+| Several, with one uniquely oldest `creationTimestamp` | Reconcile only the oldest. |
+| Several sharing the oldest `creationTimestamp` | Reconcile none. |
+
+The controller does not create, update, or delete Secrets for unselected
+ClusterProfiles. Deleting the selected ClusterProfile causes the remaining
+group to be evaluated again; Kubernetes garbage collection removes only the
+deleted object's Secret.
+
+An absent member ID is not grouped. An empty member ID is treated as absent and
+reported with an `InvalidInventoryMemberID` Warning Event. Duplicate and tied
+groups produce `DuplicateInventoryMemberID` and
+`AmbiguousInventoryMemberID` Warning Events.
+
 ## Reconciliation flow
 
 ```mermaid
