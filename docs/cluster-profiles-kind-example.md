@@ -261,6 +261,8 @@ kind: ClusterProfile
 metadata:
   name: spoke-cluster
   namespace: argocd
+  labels:
+    multicluster.x-k8s.io/inventory-member-id: spoke-cluster
 spec:
   clusterManager:
     name: manual
