@@ -6,6 +6,5 @@ metadata:
   labels:
     {{- include "argocd-clusterprofile-controller.labels" . | nindent 4 }}
 rules:
-  {{- include "argocd-clusterprofile-controller.clusterProfileRules" . | nindent 2 }}
-  {{- include "argocd-clusterprofile-controller.secretRules" . | nindent 2 }}
+  {{- include "argocd-clusterprofile-controller.watchedNamespaceRules" . | nindent 2 }}
 {{- end }}
