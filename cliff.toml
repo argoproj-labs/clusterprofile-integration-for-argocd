@@ -1,0 +1,66 @@
+[changelog]
+header = ""
+body = '''
+{%- macro contribution_link(commit, repository_url) -%}
+{% if commit.remote.pr_number -%}
+[#{{ commit.remote.pr_number }}]({{ repository_url }}/pull/{{ commit.remote.pr_number }})
+{%- else -%}
+[{{ commit.id | truncate(length=7, end="") }}]({{ repository_url }}/commit/{{ commit.id }})
+{%- endif %}
+{%- endmacro -%}
+{% set repository_url = get_env(name="REPOSITORY_URL") -%}
+{% set release_tag = get_env(name="RELEASE_TAG") -%}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+
+{% for commit in commits -%}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}{{ commit.message | split(pat="\n") | first }} by {% if commit.remote.username %}@{{ commit.remote.username }}{% else %}{{ commit.author.name }}{% endif %} in {{ self::contribution_link(commit=commit, repository_url=repository_url) }}
+{% if commit.breaking_description %}  {{ commit.breaking_description }}
+{% endif -%}
+{% endfor -%}
+{% endfor %}
+{%- set_global contributors = [] -%}
+{% for contributor in github.contributors | default(value=[]) -%}
+{% if contributor.username and not contributor.username is ending_with("[bot]") -%}
+{% set_global contributors = contributors | concat(with=contributor) -%}
+{% endif -%}
+{% endfor -%}
+{% set contributors = contributors | unique(attribute="username") | sort(attribute="username") -%}
+{% if contributors | length > 0 %}
+### Contributors
+
+Thanks to {% for contributor in contributors %}@{{ contributor.username }}{% if not loop.last %}, {% endif %}{% endfor %} for your contributions!
+{% endif -%}
+{% set new_contributors = contributors | filter(attribute="is_first_time", value=true) -%}
+{% if new_contributors | length > 0 %}
+### New Contributors
+
+Welcome and thank you to our new contributor{% if new_contributors | length > 1 %}s{% endif %}: {% for contributor in new_contributors %}{% if not loop.first %}{% if loop.last %}{% if loop.index > 2 %},{% endif %} and {% else %}, {% endif %}{% endif %}@{{ contributor.username }}{% endfor %}!
+{% endif -%}
+{% if previous.version %}
+**Full Changelog**: {{ repository_url }}/compare/{{ previous.version }}...{{ release_tag }}
+{% else %}
+**Full Changelog**: {{ repository_url }}/commits/{{ release_tag }}
+{% endif %}
+'''
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = false
+split_commits = false
+commit_preprocessors = [
+    { pattern = '^([^\n]*) \(#[0-9]+\)(\n|$)', replace = '${1}${2}' },
+    { pattern = '^Merge pull request #[0-9]+ from ', replace = "Merge pull request from " },
+]
+commit_parsers = [
+    { field = "breaking", pattern = "true", group = "<!-- 0 -->Breaking Changes" },
+    { message = '^feat(\([^)]*\))?!?:', group = "<!-- 1 -->Features" },
+    { message = '^fix(\([^)]*\))?!?:', group = "<!-- 2 -->Bug Fixes" },
+    { message = '^perf(\([^)]*\))?!?:', group = "<!-- 3 -->Performance" },
+    { message = '^docs?(\([^)]*\))?!?:', group = "<!-- 4 -->Documentation" },
+    { message = ".*", group = "<!-- 5 -->Other Changes" },
+]
+filter_commits = false
+tag_pattern = '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$'
+sort_commits = "oldest"
