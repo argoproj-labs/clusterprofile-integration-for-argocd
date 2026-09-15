@@ -81,11 +81,11 @@ e2e: ## Run full live and multi-node HA kind-based e2e tests.
 
 .PHONY: build
 build: fmt vet ## Build manager binary.
-	go build -o bin/manager main.go controller.go
+	go build -o bin/manager .
 
 .PHONY: run
 run: fmt vet ## Run a controller from your host.
-	go run main.go controller.go
+	go run .
 
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.

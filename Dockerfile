@@ -9,10 +9,9 @@ COPY go.mod go.mod
 COPY go.sum go.sum
 RUN go mod download
 
-COPY main.go main.go
-COPY controller.go controller.go
+COPY *.go ./
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -a -o manager main.go controller.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -a -o manager .
 
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /
