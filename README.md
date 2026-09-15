@@ -128,7 +128,8 @@ component already owns it.
 
 The bundled Helm and Kustomize deployments enable leader election. For high availability, set Helm's `replicaCount` to at least 2 or use a Kustomize overlay to run multiple controller replicas.
 
-The Helm chart can create a `VerticalPodAutoscaler` when `vpa.enabled` is true. The cluster must already provide the `autoscaling.k8s.io/v1` CRD, a VPA controller, and the Metrics Server.
+For Vertical Pod Autoscaler configuration and prerequisites, see the
+[Helm chart documentation](charts/argocd-clusterprofile-controller/README.md#vertical-pod-autoscaler).
 
 Every namespace watched for `ClusterProfile`s is also a namespace where the controller writes `Secret`s. The Helm chart creates a `Role` in each configured namespace, or a `ClusterRole` when watching all namespaces. Wildcard mode therefore grants the controller read and write access to every `Secret` in the cluster. Prefer an explicit namespace list unless cluster-wide watching is required. The Kustomize manifests grant cluster-wide `Secret` access to support `--cluster-profile-namespaces='*'`.
 
