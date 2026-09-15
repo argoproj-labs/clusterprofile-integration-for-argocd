@@ -42,6 +42,10 @@ Expand the namespace of the release.
 {{- default .Release.Namespace .Values.namespaceOverride -}}
 {{- end }}
 
+{{- define "argocd-clusterprofile-controller.apiVersions.monitoring" -}}
+{{- default "monitoring.coreos.com/v1" .Values.apiVersionOverrides.monitoring -}}
+{{- end }}
+
 {{/*
 Create chart name and version as used by the chart label.
 */}}

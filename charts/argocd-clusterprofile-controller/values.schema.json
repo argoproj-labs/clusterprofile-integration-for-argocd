@@ -6,6 +6,13 @@
       "description": "Affinity rules for the controller pod.",
       "type": "object"
     },
+    "apiVersionOverrides": {
+      "description": "Override the monitoring resource API version with `apiVersionOverrides.monitoring`. Empty uses `monitoring.coreos.com/v1`.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
     "containerSecurityContext": {
       "description": "Container-level security context.",
       "type": "object"
@@ -27,7 +34,8 @@
         "extraEnv",
         "extraEnvFrom",
         "extraVolumeMounts",
-        "extraVolumes"
+        "extraVolumes",
+        "metrics"
       ],
       "properties": {
         "argoCDCmdParams": {
@@ -142,6 +150,216 @@
             "warn",
             "error"
           ]
+        },
+        "metrics": {
+          "type": "object",
+          "required": [
+            "enabled",
+            "service",
+            "serviceMonitor",
+            "rules"
+          ],
+          "properties": {
+            "enabled": {
+              "description": "Create a metrics Service.",
+              "type": "boolean"
+            },
+            "rules": {
+              "type": "object",
+              "required": [
+                "enabled",
+                "namespace",
+                "selector",
+                "additionalLabels",
+                "annotations",
+                "spec"
+              ],
+              "properties": {
+                "additionalLabels": {
+                  "description": "Additional labels for the PrometheusRule.",
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "annotations": {
+                  "description": "Annotations for the PrometheusRule.",
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "enabled": {
+                  "description": "Create a PrometheusRule from rules.spec.",
+                  "type": "boolean"
+                },
+                "namespace": {
+                  "description": "Namespace for the PrometheusRule. Empty uses the controller namespace.",
+                  "type": "string",
+                  "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+                  "maxLength": 63
+                },
+                "selector": {
+                  "description": "Labels added to the PrometheusRule for selection by Prometheus.",
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "spec": {
+                  "description": "Alerting and recording rules. See the `spec.groups[0].rules` list in the [inventory alert examples](../../artifacts/overlays/monitoring/prometheus-rule.yaml).",
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "service": {
+              "type": "object",
+              "required": [
+                "type",
+                "clusterIP",
+                "annotations",
+                "labels",
+                "servicePort",
+                "portName"
+              ],
+              "properties": {
+                "annotations": {
+                  "description": "Extra annotations for the metrics Service.",
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "clusterIP": {
+                  "description": "Metrics Service cluster IP. Empty lets Kubernetes assign an IP; `None` creates a headless Service when type is ClusterIP.",
+                  "type": "string"
+                },
+                "labels": {
+                  "description": "Extra labels for the metrics Service.",
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "portName": {
+                  "description": "Metrics Service port name referenced by the ServiceMonitor.",
+                  "type": "string",
+                  "minLength": 1
+                },
+                "servicePort": {
+                  "description": "Metrics Service port.",
+                  "type": "integer",
+                  "maximum": 65535,
+                  "minimum": 1
+                },
+                "type": {
+                  "description": "Metrics Service type.",
+                  "type": "string",
+                  "enum": [
+                    "ClusterIP",
+                    "NodePort",
+                    "LoadBalancer"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "serviceMonitor": {
+              "type": "object",
+              "required": [
+                "enabled",
+                "interval",
+                "scrapeTimeout",
+                "honorLabels",
+                "relabelings",
+                "metricRelabelings",
+                "selector",
+                "scheme",
+                "tlsConfig",
+                "namespace",
+                "additionalLabels",
+                "annotations"
+              ],
+              "properties": {
+                "additionalLabels": {
+                  "description": "Additional labels for the ServiceMonitor.",
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "annotations": {
+                  "description": "Annotations for the ServiceMonitor.",
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "enabled": {
+                  "description": "Create a Prometheus Operator ServiceMonitor for the metrics Service.",
+                  "type": "boolean"
+                },
+                "honorLabels": {
+                  "description": "Preserve labels exposed by the controller when they conflict with target labels.",
+                  "type": "boolean"
+                },
+                "interval": {
+                  "description": "Interval between Prometheus scrapes. Empty omits the interval and uses the Prometheus configuration.",
+                  "type": "string"
+                },
+                "metricRelabelings": {
+                  "description": "Relabeling rules applied before samples are ingested.",
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                },
+                "namespace": {
+                  "description": "Namespace for the ServiceMonitor. Empty uses the controller namespace.",
+                  "type": "string",
+                  "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+                  "maxLength": 63
+                },
+                "relabelings": {
+                  "description": "Relabeling rules applied before scraping.",
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                },
+                "scheme": {
+                  "description": "Metrics endpoint scheme. Empty uses the ServiceMonitor default (`http`).",
+                  "type": "string",
+                  "enum": [
+                    "",
+                    "http",
+                    "https"
+                  ]
+                },
+                "scrapeTimeout": {
+                  "description": "Per-scrape timeout. Empty uses the Prometheus default.",
+                  "type": "string"
+                },
+                "selector": {
+                  "description": "Labels added to the ServiceMonitor for selection by Prometheus.",
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "tlsConfig": {
+                  "description": "TLS configuration for the metrics endpoint.",
+                  "type": "object"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
         },
         "metricsPort": {
           "description": "Metrics port.",
@@ -416,53 +634,6 @@
     "resources": {
       "description": "Resource requests and limits for the controller container.",
       "type": "object"
-    },
-    "service": {
-      "type": "object",
-      "required": [
-        "metrics"
-      ],
-      "properties": {
-        "metrics": {
-          "type": "object",
-          "required": [
-            "enabled",
-            "type",
-            "port",
-            "annotations"
-          ],
-          "properties": {
-            "annotations": {
-              "description": "Extra annotations for the metrics Service.",
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              }
-            },
-            "enabled": {
-              "description": "Create a metrics Service.",
-              "type": "boolean"
-            },
-            "port": {
-              "description": "Metrics Service port.",
-              "type": "integer",
-              "maximum": 65535,
-              "minimum": 1
-            },
-            "type": {
-              "description": "Metrics Service type.",
-              "type": "string",
-              "enum": [
-                "ClusterIP",
-                "NodePort",
-                "LoadBalancer"
-              ]
-            }
-          },
-          "additionalProperties": false
-        }
-      },
-      "additionalProperties": false
     },
     "serviceAccount": {
       "type": "object",
