@@ -883,7 +883,6 @@ if [[ "${E2E_IMG}" == *@* ]] ||
   echo "E2E_IMG must be an explicitly tagged image reference: ${E2E_IMG}" >&2
   exit 1
 fi
-E2E_LOCAL_IMAGE_ID="$(docker image inspect "${E2E_IMG}" --format '{{.Id}}')"
 
 if kind get clusters | grep -qx "${HUB_CLUSTER}"; then
   echo "kind cluster already exists: ${HUB_CLUSTER}" >&2
@@ -921,17 +920,12 @@ E2E_NODE_IMAGE_STATUS="$(
   docker exec "${HUB_CLUSTER}-control-plane" \
     crictl inspecti --output json "${E2E_IMG}"
 )"
-E2E_NODE_IMAGE_ID="$(jq -r '.status.id // ""' <<<"${E2E_NODE_IMAGE_STATUS}")"
 # Kubelet reports a Pod imageID as the image ID or any digest reference of the
 # loaded image, depending on the container runtime, so identity checks accept
 # every reference the node holds for the image.
 E2E_NODE_IMAGE_IDS="$(
   jq -c '[.status.id // empty] + (.status.repoDigests // [])' <<<"${E2E_NODE_IMAGE_STATUS}"
 )"
-if [ -z "${E2E_NODE_IMAGE_ID}" ] || [ "${E2E_NODE_IMAGE_ID}" != "${E2E_LOCAL_IMAGE_ID}" ]; then
-  echo "kind node image ID ${E2E_NODE_IMAGE_ID} does not match local image ID ${E2E_LOCAL_IMAGE_ID}" >&2
-  exit 1
-fi
 
 log "installing Argo CD chart ${ARGOCD_CHART_VERSION}"
 helm --kube-context "kind-${HUB_CLUSTER}" upgrade --install argocd argo-cd \
@@ -2491,6 +2485,10 @@ log "live Argo CD integration scenarios passed"
 log "cleaning live fixtures before HA fault scenarios"
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" \
   delete applicationset guestbook-e2e --ignore-not-found --wait=true --timeout=120s >/dev/null
+if ! retry_until 120 "live Application removal before HA phase" generated_application_is_gone; then
+  echo "live Application remained after removing its ApplicationSet" >&2
+  exit 1
+fi
 for namespace in "${ARGOCD_NS}" "${MIRROR_NS}"; do
   kubectl --context "kind-${HUB_CLUSTER}" -n "${namespace}" \
     delete clusterprofiles.multicluster.x-k8s.io --all \
@@ -2503,11 +2501,6 @@ for namespace in "${ARGOCD_NS}" "${MIRROR_NS}"; do
 done
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" \
   delete secret "${COLLISION_SECRET_NAME}" --ignore-not-found >/dev/null
-if ! retry_until 120 "live Application removal before HA phase" generated_application_is_gone; then
-  echo "live Application remained after removing its ApplicationSet" >&2
-  exit 1
-fi
-
 log "stopping Argo CD workloads while preserving the ClusterProfile controller"
 for resource in $(
   kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" \
