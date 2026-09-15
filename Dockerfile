@@ -1,4 +1,6 @@
 # syntax=docker/dockerfile:1
+# Include source dependencies from go.mod alongside the final image SBOM.
+ARG BUILDKIT_SBOM_SCAN_CONTEXT=true
 FROM --platform=$BUILDPLATFORM golang:1.26.7 AS builder
 
 WORKDIR /workspace
