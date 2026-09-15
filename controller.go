@@ -129,6 +129,7 @@ type ClusterProfileReconciler struct {
 	// AccessProviders is the set of access providers used to build the kubeconfig for a ClusterProfile.
 	AccessProviders *access.Config
 	recorder        events.EventRecorder
+	metrics         *clusterProfileMetrics
 	memberLocks     keyedMutex[client.ObjectKey]
 }
 
@@ -342,12 +343,18 @@ func (r *ClusterProfileReconciler) reconcileClusterProfile(
 			Namespace: key.Namespace,
 		},
 	}
-	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+	operation, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
 		return r.mutateSecret(secret, clusterProfile, rendered)
 	})
 	if err != nil {
 		log.Error(err, "unable to create or update secret for ClusterProfile")
 		return err
+	}
+	switch operation {
+	case controllerutil.OperationResultCreated:
+		r.metrics.recordSecretChange(clusterProfile.Namespace, secretOperationCreate)
+	case controllerutil.OperationResultUpdated:
+		r.metrics.recordSecretChange(clusterProfile.Namespace, secretOperationUpdate)
 	}
 
 	return nil
@@ -392,6 +399,7 @@ func (r *ClusterProfileReconciler) handleOwnedSecretAfterRenderFailure(
 	if err := r.Patch(ctx, secret, patch); err != nil {
 		return err
 	}
+	r.metrics.recordSecretChange(secret.Namespace, secretOperationUpdate)
 	log.Info("updated generated Secret labels while retaining last-known-good credentials")
 	return nil
 }
@@ -437,9 +445,13 @@ func (r *ClusterProfileReconciler) deleteSecretWithPreconditions(
 	uid := secret.UID
 	resourceVersion := secret.ResourceVersion
 	preconditions := client.Preconditions{UID: &uid, ResourceVersion: &resourceVersion}
-	if err := r.Delete(ctx, secret, preconditions); err != nil && !apierrors.IsNotFound(err) {
+	if err := r.Delete(ctx, secret, preconditions); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
 		return err
 	}
+	r.metrics.recordSecretChange(secret.Namespace, secretOperationDelete)
 	return nil
 }
 

@@ -338,6 +338,70 @@ controller_metrics_are_available() {
   controller_metrics_snapshot >/dev/null
 }
 
+custom_metric_series_has_labels() {
+  local series="$1" metric_name="$2" namespace="$3" resolution="$4" member_id="$5"
+  [[ "${series}" == "${metric_name}"\{* ]] &&
+    [[ "${series}" == *"inventory_namespace=\"${namespace}\""* ]] &&
+    [[ "${series}" == *"resolution=\"${resolution}\""* ]] &&
+    { [ -z "${member_id}" ] || [[ "${series}" == *"inventory_member_id=\"${member_id}\""* ]]; }
+}
+
+controller_custom_metric_series_is() {
+  local metric_name="$1" namespace="$2" resolution="$3" member_id="$4" expected="$5"
+  local pod metrics series value pod_count=0 matching
+  for pod in $(controller_pod_names); do
+    pod_count=$((pod_count + 1))
+    metrics="$(
+      kubectl --context "kind-${HUB_CLUSTER}" --request-timeout=5s get --raw \
+        "/api/v1/namespaces/${ARGOCD_NS}/pods/${pod}:8080/proxy/metrics"
+    )" || return 1
+    matching=0
+    while read -r series value _; do
+      if custom_metric_series_has_labels \
+        "${series}" "${metric_name}" "${namespace}" "${resolution}" "${member_id}"; then
+        matching=$((matching + 1))
+        [ "${value}" = "${expected}" ] || return 1
+      fi
+    done <<<"${metrics}"
+    if [ "${matching}" -ne 1 ]; then
+      return 1
+    fi
+  done
+  [ "${pod_count}" -gt 0 ]
+}
+
+controller_custom_metric_series_is_absent() {
+  local metric_name="$1" namespace="$2" resolution="$3" member_id="$4"
+  local pod metrics series value pod_count=0
+  for pod in $(controller_pod_names); do
+    pod_count=$((pod_count + 1))
+    metrics="$(
+      kubectl --context "kind-${HUB_CLUSTER}" --request-timeout=5s get --raw \
+        "/api/v1/namespaces/${ARGOCD_NS}/pods/${pod}:8080/proxy/metrics"
+    )" || return 1
+    while read -r series value _; do
+      if custom_metric_series_has_labels \
+        "${series}" "${metric_name}" "${namespace}" "${resolution}" "${member_id}"; then
+        return 1
+      fi
+    done <<<"${metrics}"
+  done
+  [ "${pod_count}" -gt 0 ]
+}
+
+dump_controller_custom_metric_series() {
+  local metric_name="$1" pod metrics
+  for pod in $(controller_pod_names); do
+    metrics="$(
+      kubectl --context "kind-${HUB_CLUSTER}" --request-timeout=5s get --raw \
+        "/api/v1/namespaces/${ARGOCD_NS}/pods/${pod}:8080/proxy/metrics"
+    )" || continue
+    echo "metrics observed on ${pod} for ${metric_name}:" >&2
+    awk -v metric_name="${metric_name}" \
+      '$1 ~ ("^" metric_name "\\{") { print }' <<<"${metrics}" >&2
+  done
+}
+
 controller_is_stopped() {
   local replicas
   replicas="$(
@@ -1877,6 +1941,27 @@ if ! retry_until 120 "newer duplicate inventory member Secret absence" \
 fi
 assert_secret_exists "${ARGOCD_NS}" "${DUPLICATE_OLDEST_SECRET_NAME}"
 assert_secret_exists "${MIRROR_NS}" "${DUPLICATE_MIRROR_SECRET_NAME}"
+if ! retry_until 120 "duplicate inventory member metrics on every controller" \
+  controller_custom_metric_series_is \
+    argocd_clusterprofile_inventory_member_conflict_group_size \
+    "${ARGOCD_NS}" duplicate "${DUPLICATE_MEMBER_ID}" 2; then
+  dump_controller_custom_metric_series \
+    argocd_clusterprofile_inventory_member_conflict_group_size
+  echo "controller replicas did not report a duplicate inventory member group size of two" >&2
+  exit 1
+fi
+if ! retry_until 120 "duplicate inventory member group count on every controller" \
+  controller_custom_metric_series_is \
+  argocd_clusterprofile_inventory_member_groups "${ARGOCD_NS}" duplicate "" 1; then
+  echo "controller replicas did not report one duplicate inventory member group" >&2
+  exit 1
+fi
+if ! retry_until 120 "mirror inventory member metrics on every controller" \
+  controller_custom_metric_series_is \
+  argocd_clusterprofile_inventory_member_groups "${MIRROR_NS}" unique "" 1; then
+  echo "controller replicas did not report the independent mirror inventory member group" >&2
+  exit 1
+fi
 
 log "deleting the selected member and verifying next-oldest election"
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" \
@@ -1892,6 +1977,19 @@ if ! retry_until 120 "oldest inventory member Secret garbage collection" \
   exit 1
 fi
 assert_secret_exists "${MIRROR_NS}" "${DUPLICATE_MIRROR_SECRET_NAME}"
+if ! retry_until 120 "resolved inventory member metrics on every controller" \
+  controller_custom_metric_series_is_absent \
+    argocd_clusterprofile_inventory_member_conflict_group_size \
+    "${ARGOCD_NS}" duplicate "${DUPLICATE_MEMBER_ID}"; then
+  echo "controller replicas continued reporting the resolved duplicate member conflict" >&2
+  exit 1
+fi
+if ! retry_until 120 "elected inventory member metrics on every controller" \
+  controller_custom_metric_series_is \
+  argocd_clusterprofile_inventory_member_groups "${ARGOCD_NS}" unique "" 1; then
+  echo "controller replicas did not report the elected inventory member as unique" >&2
+  exit 1
+fi
 
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" \
   delete clusterprofile "${DUPLICATE_NEWER_CP_NAME}" --wait=true --timeout=60s
