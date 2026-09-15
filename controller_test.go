@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"reflect"
+	goruntime "runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -388,6 +389,10 @@ func writeProviderConfigFile(t *testing.T, data []byte) string {
 
 func TestBuildRESTConfig(t *testing.T) {
 	t.Run("uses the selected context and applies controller defaults", func(t *testing.T) {
+		originalVersion := version
+		version = "v0.1.0"
+		t.Cleanup(func() { version = originalVersion })
+
 		const hub, spoke = "hub", "spoke"
 		config := clientcmdapi.Config{
 			Clusters: map[string]*clientcmdapi.Cluster{
@@ -407,9 +412,8 @@ func TestBuildRESTConfig(t *testing.T) {
 
 		require.NoError(t, err)
 		assert.Equal(t, "https://hub.example.com", restConfig.Host)
-		version := common.GetVersion()
 		assert.Equal(t,
-			cliName+"/"+version.Version+" ("+version.Platform+")",
+			cliName+"/v0.1.0 ("+goruntime.GOOS+"/"+goruntime.GOARCH+")",
 			restConfig.UserAgent,
 		)
 		assert.Equal(t, appv1alpha1.K8sClientConfigQPS, restConfig.QPS)
