@@ -1,6 +1,6 @@
 # Cluster Profile Controller
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Go Report Card](https://goreportcard.com/badge/github.com/argoproj-labs/clusterprofile-integration-for-argocd)](https://goreportcard.com/report/github.com/argoproj-labs/clusterprofile-integration-for-argocd)
 
 The [Cluster Profile API](https://multicluster.sigs.k8s.io/concepts/cluster-profile-api/) provides a standard way to describe and manage clusters. The Cluster Profile controller allows automatic registration of clusters from `ClusterProfile` resources in Argo CD by creating and managing `Secret`s corresponding to `ClusterProfile`s. This avoids having to manually register and unregister these clusters with Argo CD, and notably when using a cluster manager that generates and syncs `ClusterProfile` resources.
