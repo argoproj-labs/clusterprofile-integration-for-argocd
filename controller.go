@@ -35,12 +35,10 @@ import (
 )
 
 const (
-	// secretNameTemplate is the template used to generate the name of the Secret for a ClusterProfile.
 	secretNameTemplate = "cluster-%s"
 	// boundedSecretNamePrefix names Secrets whose profile name exceeds the length limit, and is
 	// disjoint from raw names produced by secretNameTemplate.
-	boundedSecretNamePrefix = "clusterprofile-"
-	// generatedMetadataHashBytes is the number of digest bytes retained by boundedMetadataValue.
+	boundedSecretNamePrefix    = "clusterprofile-"
 	generatedMetadataHashBytes = 16
 	// clusterProfileNameKey identifies the ClusterProfile that a Secret was created from.
 	clusterProfileNameKey = "argocd.argoproj.io/cluster-profile-name"
@@ -144,7 +142,6 @@ func (r *ClusterProfileReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	log := r.Log.WithValues("clusterprofile", req.NamespacedName)
 
-	// Fetch Cluster Profile
 	var clusterProfile clusterinventory.ClusterProfile
 	if err := r.Get(ctx, req.NamespacedName, &clusterProfile); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -317,7 +314,6 @@ func (r *ClusterProfileReconciler) reconcileClusterProfile(
 		return nil
 	}
 
-	// If the ClusterProfile no longer advertises access, prune the Secret it owns.
 	if len(clusterProfile.Status.CredentialProviders)+len(clusterProfile.Status.AccessProviders) == 0 {
 		if err := r.pruneSecret(ctx, clusterProfile); err != nil {
 			log.Error(err, "unable to remove secret after ClusterProfile access was revoked")
@@ -335,7 +331,6 @@ func (r *ClusterProfileReconciler) reconcileClusterProfile(
 		return err
 	}
 
-	// Create or update the secret in the ClusterProfile's namespace.
 	key := clusterProfileSecretKey(clusterProfile)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -459,9 +454,7 @@ func (r *ClusterProfileReconciler) deleteSecretWithPreconditions(
 func (r *ClusterProfileReconciler) renderSecret(
 	clusterProfile *clusterinventory.ClusterProfile,
 ) (*renderedSecret, error) {
-	// Check for supported cloud provider. For example, a Cluster Profile with an access provider named
-	// "argo-cd-builtin-gcp" will authenticate with cmd/argocd-k8s-auth/commands/gcp.go directly, without
-	// requiring an access providers file.
+	// Built-in providers use argocd-k8s-auth without an access providers file.
 	for i := range clusterProfile.Status.AccessProviders {
 		provider := &clusterProfile.Status.AccessProviders[i]
 		if !strings.HasPrefix(provider.Name, "argo-cd-builtin-") {
@@ -498,7 +491,6 @@ func (r *ClusterProfileReconciler) renderSecret(
 		return nil, fmt.Errorf("no matching access provider found for ClusterProfile %q", clusterProfile.Name)
 	}
 
-	// If using custom access providers, build the kubeconfig.
 	accessProviders := cloneAccessConfig(r.AccessProviders)
 	config, err := accessProviders.BuildConfigFromCP(clusterProfile)
 	if err != nil {
@@ -511,7 +503,6 @@ func (r *ClusterProfileReconciler) renderSecret(
 	apiConfig.CertData = config.CertData
 	apiConfig.KeyData = config.KeyData
 
-	// If there is an exec provider, add it to the config.
 	if config.ExecProvider != nil {
 		args := make([]string, len(config.ExecProvider.Args))
 		for i, arg := range config.ExecProvider.Args {
@@ -588,7 +579,7 @@ func newRenderedSecret(
 	}, nil
 }
 
-// mutateSecret populates the secret with data from the ClusterProfile.
+// mutateSecret sets the Secret's rendered data, owner reference, labels, and annotations.
 func (r *ClusterProfileReconciler) mutateSecret(
 	secret *corev1.Secret,
 	clusterProfile *clusterinventory.ClusterProfile,
@@ -709,8 +700,8 @@ func clusterProfileNameLabelValue(profileName string) string {
 	)
 }
 
-// boundedMetadataValue bounds prefix+name to maxLength, retaining a readable prefix and 128 bits
-// of digest. Only call it for a name that already exceeds maxLength.
+// boundedMetadataValue bounds prefix+name to maxLength, retaining a readable prefix and a hash suffix.
+// Call only when prefix+name exceeds maxLength.
 func boundedMetadataValue(prefix, name string, maxLength int, separator string) string {
 	digest := sha256.Sum256([]byte(name))
 	hash := hex.EncodeToString(digest[:generatedMetadataHashBytes])
@@ -775,7 +766,6 @@ func (r *ClusterProfileReconciler) ownedSecretRequests(ctx context.Context, secr
 }
 
 func (r *ClusterProfileReconciler) loadClusterProfileProviderFile() error {
-	// TODO: do we need to reload periodically? (unlikely)
 	if r.ClusterProfileProviderFile == "" {
 		r.Log.Info("no cluster profile provider file specified, skipping")
 		return nil
@@ -789,7 +779,6 @@ func (r *ClusterProfileReconciler) loadClusterProfileProviderFile() error {
 }
 
 func (r *ClusterProfileReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// If using a supported cloud provider, this step will be skipped as no file is needed.
 	if err := r.loadClusterProfileProviderFile(); err != nil {
 		return err
 	}

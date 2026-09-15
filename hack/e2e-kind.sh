@@ -32,8 +32,7 @@ COLLISION_SERVER="https://manual-collision.example.com:6443"
 LONG_LABEL_CP_NAME="$(printf 'l%.0s' {1..64})"
 LONG_SECRET_CP_NAME="$(printf 's%.0s' {1..246})"
 MAX_LENGTH_CP_NAME="$(printf 'm%.0s' {1..253})"
-# Named so that its raw Secret name is what LONG_SECRET_CP_NAME would bound down to,
-# which is the digest TestGeneratedClusterProfileMetadata pins.
+# A raw Secret name shaped like a truncated-and-hashed long name must stay distinct.
 RAW_COLLISION_CP_NAME="$(printf 's%.0s' {1..212})-c487d7cd89959dbc1df6f5deec5584b5"
 LONG_LABEL_SERVER="https://long-label.example.com:6443"
 LONG_SECRET_SERVER="https://long-secret.example.com:6443"
@@ -1855,9 +1854,6 @@ MAX_LENGTH_SECRET_NAME="$(jq -r '.metadata.name' <<<"${MAX_LENGTH_SECRET_JSON}")
 RAW_COLLISION_SECRET_NAME="$(jq -r '.metadata.name' <<<"${RAW_COLLISION_SECRET_JSON}")"
 LONG_SECRET_UID="$(jq -r '.metadata.uid' <<<"${LONG_SECRET_JSON}")"
 
-# The generated names themselves are pinned by TestGeneratedClusterProfileMetadata.
-# Only the API server can show that a bounded name and the raw name it could have
-# collided with are admitted side by side.
 test "${LONG_SECRET_NAME}" != "${RAW_COLLISION_SECRET_NAME}"
 
 log "verifying long-name Secret drift is reconciled"

@@ -475,9 +475,7 @@ profile_secrets_match_generation() {
   local generation="$1"
   kubectl --context "${HUB_CONTEXT}" -n "${NAMESPACE}" get secrets -o json \
     >"${WORK_DIR}/secrets.json" || return 1
-  # The generated Secret shape is pinned by the controller unit tests. What only a
-  # real handoff can show is that every profile still has exactly one owned Secret
-  # carrying the latest generation, so no write was dropped as leadership moved.
+  # Every profile must keep one owned Secret with the latest generation across a handoff.
   jq -n -e --arg generation "${generation}" --argjson count "${PROFILE_COUNT}" \
     --slurpfile profiles "${WORK_DIR}/profiles.json" \
     --slurpfile secrets "${WORK_DIR}/secrets.json" '

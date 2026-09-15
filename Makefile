@@ -22,13 +22,6 @@ HELM_SCHEMA := go run github.com/losisin/helm-values-schema-json/v2@v$(HELM_SCHE
 HELM_DOCS_VERSION ?= 1.14.2
 HELM_DOCS := go run github.com/norwoodj/helm-docs/cmd/helm-docs@v$(HELM_DOCS_VERSION)
 
-# Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
-ifeq (,$(shell go env GOBIN))
-GOBIN=$(shell go env GOPATH)/bin
-else
-GOBIN=$(shell go env GOBIN)
-endif
-
 .PHONY: all
 all: build
 
@@ -58,9 +51,6 @@ validate-manifests: ## Check Kustomize rendering and generated manifests.
 	diff -u $(INSTALL_MANIFEST) "$$tmp"; \
 	$(KUSTOMIZE) artifacts/overlays/monitoring >/dev/null
 
-.PHONY: generate
-generate: ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
-
 .PHONY: fmt
 fmt: ## Run go fmt against code.
 	go fmt ./...
@@ -74,7 +64,7 @@ test: fmt vet ## Run tests.
 	go test ./... -coverprofile cover.out
 
 .PHONY: e2e
-e2e: ## Run full live and multi-node HA kind-based e2e tests.
+e2e: ## Run end-to-end tests in kind.
 	$(MAKE) docker-build
 	E2E_IMG=$(IMG) E2E_INSTALL_METHOD=$(E2E_INSTALL_METHOD) ./hack/e2e-kind.sh
 

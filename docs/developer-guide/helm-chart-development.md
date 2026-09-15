@@ -1,17 +1,12 @@
 # Helm chart development
 
-The chart lives under
-`charts/argocd-clusterprofile-controller`.
+The chart lives in [charts/argocd-clusterprofile-controller](../../charts/argocd-clusterprofile-controller).
 
 ## Release versions
 
-The committed `version` and `appVersion` in:
-
-```text
-charts/argocd-clusterprofile-controller/Chart.yaml
-```
-
-are release-time placeholders, not published release versions.
+The source [Chart.yaml](../../charts/argocd-clusterprofile-controller/Chart.yaml)
+uses placeholder `version` and `appVersion` values. For source installs, set
+`image.tag` to `main` or a locally built image tag.
 
 Release artifacts are stamped from the Git tag. A tag such as `v0.1.0`
 publishes:
@@ -46,34 +41,26 @@ helm install argocd-clusterprofile-controller \
   --set image.tag=main
 ```
 
-Set `image.tag` to the container tag you want to run. The source chart's
-`appVersion` is a placeholder and is not intended to resolve to a published
-container image.
-
-Run:
+After changing the chart, regenerate its files and validate it:
 
 ```bash
-make helm-lint
 make generate-values-schema
-make validate-values-schema
 make generate-helm-docs
+make validate-values-schema
+make helm-lint
 ```
 
-`make helm-lint` runs `helm lint` against the chart.
+## Generated files
 
-`make generate-values-schema` regenerates `values.schema.json` from
-`values.yaml` and `.schema.yaml`.
+| File | Source |
+| --- | --- |
+| `values.schema.json` | `values.yaml` schema annotations and `.schema.yaml` |
+| `README.md` | `Chart.yaml`, `values.yaml` comments, and `README.md.gotmpl` |
 
-`make validate-values-schema` verifies that the generated schema is up to date
-with the committed `values.schema.json`.
-
-`make generate-helm-docs` regenerates the chart README from chart metadata and
-`values.yaml` comments.
+Edit the source files when changing the schema or chart documentation. Generation
+and validation targets are listed by `make help`.
 
 ## End-to-end testing
 
-`make e2e` creates one three-node kind hub and one spoke, installs two spread
-controller replicas from the local checkout, and runs the full end-to-end test
-suite against that shared hub. The install method defaults to
-`helm`; set `E2E_INSTALL_METHOD=kustomize` to exercise the kustomize manifests
-under `artifacts/manifests` instead. CI runs both methods via a matrix.
+`make e2e` runs [hack/e2e-kind.sh](../../hack/e2e-kind.sh).
+`E2E_INSTALL_METHOD` selects `helm` (the default) or `kustomize`.
