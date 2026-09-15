@@ -1,0 +1,25 @@
+{{- $apiVersion := include "argocd-clusterprofile-controller.apiVersions.monitoring" . }}
+{{- if and .Values.controller.metrics.enabled .Values.controller.metrics.rules.enabled (.Capabilities.APIVersions.Has $apiVersion) }}
+apiVersion: {{ $apiVersion }}
+kind: PrometheusRule
+metadata:
+  name: {{ include "argocd-clusterprofile-controller.controller.fullname" . }}
+  namespace: {{ default (include "argocd-clusterprofile-controller.namespace" .) .Values.controller.metrics.rules.namespace | quote }}
+  labels:
+    {{- include "argocd-clusterprofile-controller.labels" . | nindent 4 }}
+    {{- with .Values.controller.metrics.rules.selector }}
+      {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.controller.metrics.rules.additionalLabels }}
+      {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.controller.metrics.rules.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  groups:
+    - name: argocd-clusterprofile-controller
+      rules:
+        {{- toYaml .Values.controller.metrics.rules.spec | nindent 8 }}
+{{- end }}

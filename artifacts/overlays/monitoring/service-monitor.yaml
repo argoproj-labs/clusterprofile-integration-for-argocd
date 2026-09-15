@@ -1,0 +1,22 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  labels:
+    app.kubernetes.io/component: clusterprofile-controller
+    app.kubernetes.io/name: argocd-clusterprofile-controller
+    app.kubernetes.io/part-of: argocd
+  name: argocd-clusterprofile-controller
+spec:
+  endpoints:
+  - honorLabels: false
+    interval: 30s
+    path: /metrics
+    port: metrics
+  namespaceSelector:
+    matchNames:
+    - argocd
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: clusterprofile-controller
+      app.kubernetes.io/name: argocd-clusterprofile-controller
+      app.kubernetes.io/part-of: argocd

@@ -13,6 +13,10 @@ namespaceOverride: ""
 # -- Global values reserved for parent charts.
 global: {}
 
+# @schema additionalProperties:{"type":"string"}
+# -- Override the monitoring resource API version with `apiVersionOverrides.monitoring`. Empty uses `monitoring.coreos.com/v1`.
+apiVersionOverrides: {}
+
 ## @section Image
 # @schema additionalProperties:false
 image:
@@ -138,6 +142,89 @@ controller:
   # @schema required; item:object
   # -- Extra volumes for the controller pod.
   extraVolumes: []
+  # @schema required; additionalProperties:false
+  metrics:
+    # @schema required
+    # -- Create a metrics Service.
+    enabled: false
+    # @schema required; additionalProperties:false
+    service:
+      # @schema required; enum:[ClusterIP, NodePort, LoadBalancer]
+      # -- Metrics Service type.
+      type: ClusterIP
+      # @schema required
+      # -- Metrics Service cluster IP. Empty lets Kubernetes assign an IP; `None` creates a headless Service when type is ClusterIP.
+      clusterIP: ""
+      # @schema required; additionalProperties:{"type":"string"}
+      # -- Extra annotations for the metrics Service.
+      annotations: {}
+      # @schema required; additionalProperties:{"type":"string"}
+      # -- Extra labels for the metrics Service.
+      labels: {}
+      # @schema required; minimum:1; maximum:65535
+      # -- Metrics Service port.
+      servicePort: 8080
+      # @schema required; minLength:1
+      # -- Metrics Service port name referenced by the ServiceMonitor.
+      portName: http-metrics
+    # @schema required; additionalProperties:false
+    serviceMonitor:
+      # @schema required
+      # -- Create a Prometheus Operator ServiceMonitor for the metrics Service.
+      enabled: false
+      # @schema required
+      # -- Interval between Prometheus scrapes. Empty omits the interval and uses the Prometheus configuration.
+      interval: 30s
+      # @schema required
+      # -- Per-scrape timeout. Empty uses the Prometheus default.
+      scrapeTimeout: ""
+      # @schema required
+      # -- Preserve labels exposed by the controller when they conflict with target labels.
+      honorLabels: false
+      # @schema required; item:object
+      # -- Relabeling rules applied before scraping.
+      relabelings: []
+      # @schema required; item:object
+      # -- Relabeling rules applied before samples are ingested.
+      metricRelabelings: []
+      # @schema required; additionalProperties:{"type":"string"}
+      # -- Labels added to the ServiceMonitor for selection by Prometheus.
+      selector: {}
+      # @schema required; enum:["", http, https]
+      # -- Metrics endpoint scheme. Empty uses the ServiceMonitor default (`http`).
+      scheme: ""
+      # @schema required; skipProperties:true
+      # -- TLS configuration for the metrics endpoint.
+      tlsConfig: {}
+      # @schema required; maxLength:63; pattern:^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+      # -- Namespace for the ServiceMonitor. Empty uses the controller namespace.
+      namespace: ""
+      # @schema required; additionalProperties:{"type":"string"}
+      # -- Additional labels for the ServiceMonitor.
+      additionalLabels: {}
+      # @schema required; additionalProperties:{"type":"string"}
+      # -- Annotations for the ServiceMonitor.
+      annotations: {}
+    # @schema required; additionalProperties:false
+    rules:
+      # @schema required
+      # -- Create a PrometheusRule from rules.spec.
+      enabled: false
+      # @schema required; maxLength:63; pattern:^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+      # -- Namespace for the PrometheusRule. Empty uses the controller namespace.
+      namespace: ""
+      # @schema required; additionalProperties:{"type":"string"}
+      # -- Labels added to the PrometheusRule for selection by Prometheus.
+      selector: {}
+      # @schema required; additionalProperties:{"type":"string"}
+      # -- Additional labels for the PrometheusRule.
+      additionalLabels: {}
+      # @schema required; additionalProperties:{"type":"string"}
+      # -- Annotations for the PrometheusRule.
+      annotations: {}
+      # @schema required; item:object
+      # -- Alerting and recording rules. See the `spec.groups[0].rules` list in the [inventory alert examples](../../artifacts/overlays/monitoring/prometheus-rule.yaml).
+      spec: []
 
 # @schema additionalProperties:{"type":"string"}
 # -- Extra annotations for the controller pods.
@@ -219,22 +306,6 @@ rbac:
   create: true
 
 ## @section Networking
-# @schema additionalProperties:false
-service:
-  # @schema required; additionalProperties:false
-  metrics:
-    # @schema required
-    # -- Create a metrics Service.
-    enabled: true
-    # @schema required; enum:[ClusterIP, NodePort, LoadBalancer]
-    # -- Metrics Service type.
-    type: ClusterIP
-    # @schema required; minimum:1; maximum:65535
-    # -- Metrics Service port.
-    port: 8080
-    # @schema required; additionalProperties:{"type":"string"}
-    # -- Extra annotations for the metrics Service.
-    annotations: {}
 
 # @schema additionalProperties:false
 networkPolicy:

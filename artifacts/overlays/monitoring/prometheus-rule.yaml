@@ -1,0 +1,36 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    app.kubernetes.io/component: clusterprofile-controller
+    app.kubernetes.io/name: argocd-clusterprofile-controller
+    app.kubernetes.io/part-of: argocd
+  name: argocd-clusterprofile-controller
+spec:
+  groups:
+  - name: argocd-clusterprofile-controller
+    rules:
+    - alert: ClusterProfileInventoryMemberDuplicate
+      annotations:
+        description: Namespace {{ $labels.inventory_namespace }} has {{ $value }} ClusterProfiles with inventory member ID {{ $labels.inventory_member_id }}; the uniquely oldest profile is selected.
+        summary: Duplicate ClusterProfiles have one inventory member ID
+      expr: max by (inventory_namespace, inventory_member_id) (argocd_clusterprofile_inventory_member_conflict_group_size{resolution="duplicate"}) > 1
+      for: 5m
+      labels:
+        severity: warning
+    - alert: ClusterProfileInventoryMemberAmbiguous
+      annotations:
+        description: Namespace {{ $labels.inventory_namespace }} has {{ $value }} ClusterProfiles with inventory member ID {{ $labels.inventory_member_id }}; multiple profiles share the oldest timestamp, so no profile is selected and existing generated Secrets remain unchanged.
+        summary: ClusterProfile inventory member selection is ambiguous
+      expr: max by (inventory_namespace, inventory_member_id) (argocd_clusterprofile_inventory_member_conflict_group_size{resolution="ambiguous"}) > 1
+      for: 5m
+      labels:
+        severity: warning
+    - alert: ClusterProfileInventoryMemberIDInvalid
+      annotations:
+        description: Namespace {{ $labels.inventory_namespace }} has {{ $value }} active ClusterProfiles with an empty multicluster.x-k8s.io/inventory-member-id label; those profiles are not deduplicated.
+        summary: ClusterProfiles have an empty inventory member ID
+      expr: max by (inventory_namespace) (argocd_clusterprofile_inventory_member_id_invalid_profiles) > 0
+      for: 5m
+      labels:
+        severity: warning

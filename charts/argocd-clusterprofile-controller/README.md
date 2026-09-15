@@ -23,11 +23,17 @@ Set `vpa.enabled` to create a `VerticalPodAutoscaler` for the controller
 Deployment. The cluster must already provide the `autoscaling.k8s.io/v1` CRD,
 a VPA controller, and the Metrics Server; this chart does not install them.
 
+## Monitoring
+
+For Prometheus discovery and alert configuration, see
+[Monitoring](../../docs/monitoring.md).
+
 ## Values
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | affinity | object | `{}` | Affinity rules for the controller pod. |
+| apiVersionOverrides | object | `{}` | Override the monitoring resource API version with `apiVersionOverrides.monitoring`. Empty uses `monitoring.coreos.com/v1`. |
 | containerSecurityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"seccompProfile":{"type":"RuntimeDefault"}}` | Container-level security context. |
 | controller.argoCDCmdParams.configMapName | string | `"argocd-cmd-params-cm"` | ConfigMap name containing Argo CD command parameters. |
 | controller.argoCDCmdParams.enabled | bool | `true` | Read optional Argo CD command parameter keys from a ConfigMap. |
@@ -42,6 +48,31 @@ a VPA controller, and the Metrics Server; this chart does not install them.
 | controller.extraVolumes | list | `[]` | Extra volumes for the controller pod. |
 | controller.logFormat | string | `""` | Explicit log format (`json` or `text`). Empty keeps the controller default or Argo CD cmd params value. |
 | controller.logLevel | string | `""` | Explicit log level (`debug`, `info`, `warn`, `error`). Empty keeps the controller default or Argo CD cmd params value. |
+| controller.metrics.enabled | bool | `false` | Create a metrics Service. |
+| controller.metrics.rules.additionalLabels | object | `{}` | Additional labels for the PrometheusRule. |
+| controller.metrics.rules.annotations | object | `{}` | Annotations for the PrometheusRule. |
+| controller.metrics.rules.enabled | bool | `false` | Create a PrometheusRule from rules.spec. |
+| controller.metrics.rules.namespace | string | `""` | Namespace for the PrometheusRule. Empty uses the controller namespace. |
+| controller.metrics.rules.selector | object | `{}` | Labels added to the PrometheusRule for selection by Prometheus. |
+| controller.metrics.rules.spec | list | `[]` | Alerting and recording rules. See the `spec.groups[0].rules` list in the [inventory alert examples](../../artifacts/overlays/monitoring/prometheus-rule.yaml). |
+| controller.metrics.service.annotations | object | `{}` | Extra annotations for the metrics Service. |
+| controller.metrics.service.clusterIP | string | `""` | Metrics Service cluster IP. Empty lets Kubernetes assign an IP; `None` creates a headless Service when type is ClusterIP. |
+| controller.metrics.service.labels | object | `{}` | Extra labels for the metrics Service. |
+| controller.metrics.service.portName | string | `"http-metrics"` | Metrics Service port name referenced by the ServiceMonitor. |
+| controller.metrics.service.servicePort | int | `8080` | Metrics Service port. |
+| controller.metrics.service.type | string | `"ClusterIP"` | Metrics Service type. |
+| controller.metrics.serviceMonitor.additionalLabels | object | `{}` | Additional labels for the ServiceMonitor. |
+| controller.metrics.serviceMonitor.annotations | object | `{}` | Annotations for the ServiceMonitor. |
+| controller.metrics.serviceMonitor.enabled | bool | `false` | Create a Prometheus Operator ServiceMonitor for the metrics Service. |
+| controller.metrics.serviceMonitor.honorLabels | bool | `false` | Preserve labels exposed by the controller when they conflict with target labels. |
+| controller.metrics.serviceMonitor.interval | string | `"30s"` | Interval between Prometheus scrapes. Empty omits the interval and uses the Prometheus configuration. |
+| controller.metrics.serviceMonitor.metricRelabelings | list | `[]` | Relabeling rules applied before samples are ingested. |
+| controller.metrics.serviceMonitor.namespace | string | `""` | Namespace for the ServiceMonitor. Empty uses the controller namespace. |
+| controller.metrics.serviceMonitor.relabelings | list | `[]` | Relabeling rules applied before scraping. |
+| controller.metrics.serviceMonitor.scheme | string | `""` | Metrics endpoint scheme. Empty uses the ServiceMonitor default (`http`). |
+| controller.metrics.serviceMonitor.scrapeTimeout | string | `""` | Per-scrape timeout. Empty uses the Prometheus default. |
+| controller.metrics.serviceMonitor.selector | object | `{}` | Labels added to the ServiceMonitor for selection by Prometheus. |
+| controller.metrics.serviceMonitor.tlsConfig | object | `{}` | TLS configuration for the metrics endpoint. |
 | controller.metricsPort | int | `8080` | Metrics port. |
 | controller.name | string | `"clusterprofile-controller"` | Controller component name. |
 | controller.probePort | int | `8081` | Health probe port. |
@@ -69,10 +100,6 @@ a VPA controller, and the Metrics Server; this chart does not install them.
 | rbac.create | bool | `true` | Create RBAC resources for the controller. |
 | replicaCount | int | `1` | Number of controller replicas. |
 | resources | object | `{"limits":{"memory":"256Mi"},"requests":{"cpu":"10m","memory":"128Mi"}}` | Resource requests and limits for the controller container. |
-| service.metrics.annotations | object | `{}` | Extra annotations for the metrics Service. |
-| service.metrics.enabled | bool | `true` | Create a metrics Service. |
-| service.metrics.port | int | `8080` | Metrics Service port. |
-| service.metrics.type | string | `"ClusterIP"` | Metrics Service type. |
 | serviceAccount.annotations | object | `{}` | Extra annotations for the service account. |
 | serviceAccount.create | bool | `true` | Create a service account for the controller. |
 | serviceAccount.labels | object | `{}` | Extra labels for the service account. |

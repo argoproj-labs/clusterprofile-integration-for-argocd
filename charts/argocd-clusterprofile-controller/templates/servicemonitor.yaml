@@ -1,0 +1,52 @@
+{{- $apiVersion := include "argocd-clusterprofile-controller.apiVersions.monitoring" . }}
+{{- if and .Values.controller.metrics.enabled .Values.controller.metrics.serviceMonitor.enabled (.Capabilities.APIVersions.Has $apiVersion) }}
+apiVersion: {{ $apiVersion }}
+kind: ServiceMonitor
+metadata:
+  name: {{ include "argocd-clusterprofile-controller.controller.fullname" . }}
+  namespace: {{ default (include "argocd-clusterprofile-controller.namespace" .) .Values.controller.metrics.serviceMonitor.namespace | quote }}
+  labels:
+    {{- include "argocd-clusterprofile-controller.labels" . | nindent 4 }}
+    {{- with .Values.controller.metrics.serviceMonitor.selector }}
+      {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.controller.metrics.serviceMonitor.additionalLabels }}
+      {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.controller.metrics.serviceMonitor.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  endpoints:
+    - port: {{ .Values.controller.metrics.service.portName }}
+      path: /metrics
+      {{- with .Values.controller.metrics.serviceMonitor.interval }}
+      interval: {{ . }}
+      {{- end }}
+      {{- with .Values.controller.metrics.serviceMonitor.scrapeTimeout }}
+      scrapeTimeout: {{ . }}
+      {{- end }}
+      honorLabels: {{ .Values.controller.metrics.serviceMonitor.honorLabels }}
+      {{- with .Values.controller.metrics.serviceMonitor.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.metrics.serviceMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.metrics.serviceMonitor.scheme }}
+      scheme: {{ . }}
+      {{- end }}
+      {{- with .Values.controller.metrics.serviceMonitor.tlsConfig }}
+      tlsConfig:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  namespaceSelector:
+    matchNames:
+      - {{ include "argocd-clusterprofile-controller.namespace" . }}
+  selector:
+    matchLabels:
+      {{- include "argocd-clusterprofile-controller.selectorLabels" . | nindent 6 }}
+{{- end }}

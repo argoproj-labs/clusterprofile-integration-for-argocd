@@ -1,4 +1,4 @@
-{{- if .Values.service.metrics.enabled }}
+{{- if .Values.controller.metrics.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -6,15 +6,21 @@ metadata:
   namespace: {{ include "argocd-clusterprofile-controller.namespace" . }}
   labels:
     {{- include "argocd-clusterprofile-controller.labels" . | nindent 4 }}
-  {{- with .Values.service.metrics.annotations }}
+    {{- with .Values.controller.metrics.service.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.controller.metrics.service.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  type: {{ .Values.service.metrics.type }}
+  type: {{ .Values.controller.metrics.service.type }}
+  {{- if and .Values.controller.metrics.service.clusterIP (eq .Values.controller.metrics.service.type "ClusterIP") }}
+  clusterIP: {{ .Values.controller.metrics.service.clusterIP }}
+  {{- end }}
   ports:
-    - name: metrics
-      port: {{ .Values.service.metrics.port }}
+    - name: {{ .Values.controller.metrics.service.portName }}
+      port: {{ .Values.controller.metrics.service.servicePort }}
       protocol: TCP
       targetPort: metrics
   selector:
