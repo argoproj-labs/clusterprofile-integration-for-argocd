@@ -100,6 +100,7 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          sbom: SELECT_CATALOGERS=+go-module-file-cataloger
           tags: ${{ needs.setup-variables.outputs.image_tags }}
 
       - name: Install cosign

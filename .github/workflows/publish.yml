@@ -36,6 +36,7 @@ jobs:
         context: .
         platforms: linux/amd64
         push: false
+        sbom: SELECT_CATALOGERS=+go-module-file-cataloger
 
   push:
     name: Publish image and Helm chart
@@ -68,6 +69,7 @@ jobs:
         context: .
         platforms: linux/amd64,linux/arm64
         push: true
+        sbom: SELECT_CATALOGERS=+go-module-file-cataloger
         tags: |
           ghcr.io/${{ github.repository }}:${{ github.sha }}
           ghcr.io/${{ github.repository }}:main
