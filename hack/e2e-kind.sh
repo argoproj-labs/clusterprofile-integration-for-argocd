@@ -13,7 +13,7 @@ E2E_IMAGE_TAG="${E2E_IMG##*:}"
 E2E_PREFIX="${E2E_PREFIX:-cpia-e2e-$$}"
 E2E_INSTALL_METHOD="${E2E_INSTALL_METHOD:-helm}"
 KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-}"
-SECRETREADER_IMAGE="${SECRETREADER_IMAGE:-registry.k8s.io/cluster-inventory-api/secretreader:v0.1.3}"
+SECRETREADER_IMAGE="${SECRETREADER_IMAGE:-registry.k8s.io/cluster-inventory-api/secretreader:v0.2.0}"
 SECRETREADER_COMMAND="${SECRETREADER_COMMAND:-/plugins/secretreader/bin/secretreader-plugin}"
 HUB_CLUSTER="${HUB_CLUSTER:-${E2E_PREFIX}-hub}"
 SPOKE_CLUSTER="${SPOKE_CLUSTER:-${E2E_PREFIX}-spoke}"
@@ -526,7 +526,7 @@ owned_secret_for_profile() {
   kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" get secrets -o json | jq -c \
     --arg profile_uid "${profile_uid}" \
     'first(.items[] | select(any(.metadata.ownerReferences[]?;
-      .apiVersion == "multicluster.x-k8s.io/v1alpha1" and
+      .apiVersion == "multicluster.x-k8s.io/v1alpha2" and
       .kind == "ClusterProfile" and
       .uid == $profile_uid and
       .controller == true))) // empty'
@@ -566,7 +566,7 @@ assert_secret_exists() {
 inventory_warning_is_recorded() {
   local namespace="$1" profile_name="$2" reason="$3"
   kubectl --context "kind-${HUB_CLUSTER}" -n "${namespace}" get events.events.k8s.io -o json \
-    --field-selector "reason=${reason},regarding.apiVersion=multicluster.x-k8s.io/v1alpha1,regarding.kind=ClusterProfile,regarding.name=${profile_name}" |
+    --field-selector "reason=${reason},regarding.apiVersion=multicluster.x-k8s.io/v1alpha2,regarding.kind=ClusterProfile,regarding.name=${profile_name}" |
     jq -e 'any(.items[]; .type == "Warning")' >/dev/null
 }
 
@@ -575,7 +575,7 @@ clusterprofile_owned_secrets_are_gone() {
   kubectl --context "kind-${HUB_CLUSTER}" -n "${namespace}" get secrets -o json | jq -e '
     all(.items[];
       all(.metadata.ownerReferences[]?;
-        .apiVersion != "multicluster.x-k8s.io/v1alpha1" or
+        .apiVersion != "multicluster.x-k8s.io/v1alpha2" or
         .kind != "ClusterProfile"))' >/dev/null
 }
 
@@ -609,7 +609,7 @@ set_builtin_profile_access() {
 apply_inventory_member_profile() {
   local profile_name="$1" namespace="${2:-${ARGOCD_NS}}"
   kubectl --context "kind-${HUB_CLUSTER}" apply -f - <<EOF
-apiVersion: multicluster.x-k8s.io/v1alpha1
+apiVersion: multicluster.x-k8s.io/v1alpha2
 kind: ClusterProfile
 metadata:
   name: ${profile_name}
@@ -1564,7 +1564,7 @@ fi
 
 log "creating a hub-only ClusterProfile for the explicit kubeconfig fixture"
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" apply -f - <<EOF
-apiVersion: multicluster.x-k8s.io/v1alpha1
+apiVersion: multicluster.x-k8s.io/v1alpha2
 kind: ClusterProfile
 metadata:
   name: ${OUT_OF_CLUSTER_CP_NAME}
@@ -1755,7 +1755,7 @@ stringData:
   server: ${COLLISION_SERVER}
   config: '{"tlsClientConfig":{"insecure":true}}'
 ---
-apiVersion: multicluster.x-k8s.io/v1alpha1
+apiVersion: multicluster.x-k8s.io/v1alpha2
 kind: ClusterProfile
 metadata:
   name: ${COLLISION_CP_NAME}
@@ -1803,7 +1803,7 @@ for profile_name in \
   "${RAW_COLLISION_CP_NAME}"; do
   cat <<EOF
 ---
-apiVersion: multicluster.x-k8s.io/v1alpha1
+apiVersion: multicluster.x-k8s.io/v1alpha2
 kind: ClusterProfile
 metadata:
   name: ${profile_name}
@@ -1869,7 +1869,7 @@ fi
 log "revoking and restoring the 246-character ClusterProfile access"
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" \
   patch clusterprofile "${LONG_SECRET_CP_NAME}" --subresource=status --type=merge \
-  -p '{"status":{"accessProviders":null,"credentialProviders":null}}' >/dev/null
+  -p '{"status":{"accessProviders":null}}' >/dev/null
 if ! retry_until 120 "long-name Secret revocation" secret_is_gone "${ARGOCD_NS}" "${LONG_SECRET_NAME}"; then
   echo "controller did not revoke the long-name Secret" >&2
   exit 1
@@ -1998,7 +1998,7 @@ fi
 
 log "creating ClusterProfile"
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" apply -f - <<EOF
-apiVersion: multicluster.x-k8s.io/v1alpha1
+apiVersion: multicluster.x-k8s.io/v1alpha2
 kind: ClusterProfile
 metadata:
   name: ${CP_NAME}
@@ -2038,7 +2038,7 @@ test "$(printf '%s' "${CONFIG}" | jq -r '.disableCompression')" = "true"
 
 log "creating same-named ClusterProfile in ${MIRROR_NS}"
 kubectl --context "kind-${HUB_CLUSTER}" -n "${MIRROR_NS}" apply -f - <<EOF
-apiVersion: multicluster.x-k8s.io/v1alpha1
+apiVersion: multicluster.x-k8s.io/v1alpha2
 kind: ClusterProfile
 metadata:
   name: ${CP_NAME}
@@ -2219,7 +2219,7 @@ REVOKED_SECRET_UID="$(
 log "removing every advertised access provider from the live ClusterProfile"
 kubectl --context "kind-${HUB_CLUSTER}" -n "${ARGOCD_NS}" \
   patch clusterprofile "${CP_NAME}" --subresource=status --type=merge \
-  -p '{"status":{"accessProviders":null,"credentialProviders":null}}'
+  -p '{"status":{"accessProviders":null}}'
 if ! retry_until 120 "owned cluster Secret removal after access revocation" \
   secret_is_gone "${ARGOCD_NS}" "${SECRET_NAME}"; then
   echo "owned Secret ${SECRET_NAME} survived ClusterProfile access revocation" >&2
@@ -2328,7 +2328,7 @@ if [ "${E2E_INSTALL_METHOD}" = "helm" ]; then
 
   log "verifying remote-only reconciliation and recovery from a current provider error"
   kubectl --context "kind-${HUB_CLUSTER}" -n "${MIRROR_NS}" apply -f - <<EOF
-apiVersion: multicluster.x-k8s.io/v1alpha1
+apiVersion: multicluster.x-k8s.io/v1alpha2
 kind: ClusterProfile
 metadata:
   name: ${REMOTE_ONLY_CP_NAME}

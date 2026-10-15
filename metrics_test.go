@@ -16,7 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	clusterinventory "sigs.k8s.io/cluster-inventory-api/apis/v1alpha1"
+	clusterinventory "sigs.k8s.io/cluster-inventory-api/apis/v1alpha2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -74,7 +74,7 @@ func TestClusterProfileMetricsInventoryState(t *testing.T) {
 	)
 	invalid := newInventoryClusterProfile("invalid", testNamespace, "", createdAt)
 	absent := newInventoryClusterProfile("absent", testNamespace, "", createdAt)
-	delete(absent.Labels, inventoryMemberIDLabel)
+	delete(absent.Labels, clusterinventory.LabelInventoryMemberIDKey)
 	terminating := newInventoryClusterProfile("terminating", testNamespace, "terminating", createdAt)
 	deletionTimestamp := metav1.NewTime(createdAt.Add(2 * time.Minute))
 	terminating.DeletionTimestamp = &deletionTimestamp

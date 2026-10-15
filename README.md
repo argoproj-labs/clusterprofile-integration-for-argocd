@@ -11,6 +11,7 @@ When reading the details below, it may be helpful to have concrete examples. See
 
 - **Kubernetes**: v1.27+
 - **Argo CD**: v3.5+
+- **Cluster Inventory API CRDs**: v0.2.0+ (the controller reads `ClusterProfile`s through `multicluster.x-k8s.io/v1alpha2`)
 - **Go** (for local development): v1.26+
 
 ## How it works
@@ -22,7 +23,7 @@ The Cluster Profile controller watches for `ClusterProfile` custom resources. Fo
 A `ClusterProfile` object looks like this:
 
 ```yaml
-apiVersion: "multicluster.x-k8s.io/v1alpha1"
+apiVersion: "multicluster.x-k8s.io/v1alpha2"
 kind: ClusterProfile
 metadata:
   name: my-cluster
@@ -40,9 +41,9 @@ status:
       server: https://my-cluster.example.com
 ```
 
-The controller uses `status.accessProviders` to build the corresponding Argo CD `Secret`.
+The controller uses `status.accessProviders` to build the corresponding Argo CD `Secret`. The deprecated `status.credentialProviders` field only exists in the `v1alpha1` API and is not read, so a cluster manager must populate `status.accessProviders` for its clusters to be registered.
 
-These `ClusterProfile` resources may be synced automatically by a cluster manager or created manually. The `ClusterProfile` CRD from the [Cluster Inventory API](https://github.com/kubernetes-sigs/cluster-inventory-api) must exist in the cluster before you deploy the controller with Helm.
+These `ClusterProfile` resources may be synced automatically by a cluster manager or created manually. The `ClusterProfile` CRD from the [Cluster Inventory API](https://github.com/kubernetes-sigs/cluster-inventory-api) must exist in the cluster and serve the `multicluster.x-k8s.io/v1alpha2` version (Cluster Inventory API v0.2.0 or later) before you deploy the controller with Helm.
 
 Each generated `Secret` is created **in the same namespace as its source `ClusterProfile`**, with an owner reference back to it. Its name is normally `cluster-<ClusterProfile name>`. Names and label values that would exceed Kubernetes metadata limits use deterministic bounded encodings instead.
 
@@ -121,8 +122,9 @@ kubectl apply -k artifacts/manifests
 ```
 
 The Helm chart does not install the `clusterprofiles.multicluster.x-k8s.io` CRD.
-Install the Cluster Inventory API CRD separately, or use a cluster where another
-component already owns it.
+Install the Cluster Inventory API CRD separately (v0.2.0 or later, so that
+`multicluster.x-k8s.io/v1alpha2` is served), or use a cluster where another
+component already owns it. The Kustomize manifests bundle this CRD version.
 
 ### Deployment and high availability
 

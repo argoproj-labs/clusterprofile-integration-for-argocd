@@ -75,7 +75,7 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-require sigs.k8s.io/cluster-inventory-api v0.1.3
+require sigs.k8s.io/cluster-inventory-api v0.2.0
 
 require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect

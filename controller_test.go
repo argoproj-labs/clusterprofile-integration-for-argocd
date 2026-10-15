@@ -27,9 +27,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
-	clientcmdv1 "k8s.io/client-go/tools/clientcmd/api/v1"
 	"k8s.io/client-go/tools/events"
-	clusterinventory "sigs.k8s.io/cluster-inventory-api/apis/v1alpha1"
+	clusterinventory "sigs.k8s.io/cluster-inventory-api/apis/v1alpha2"
 	"sigs.k8s.io/cluster-inventory-api/pkg/access"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -207,14 +206,14 @@ func newClusterProfile(
 func newBuiltinProviderClusterProfile(labels map[string]string) *clusterinventory.ClusterProfile {
 	return newClusterProfile(labels, clusterinventory.AccessProvider{
 		Name:    "argo-cd-builtin-gcp",
-		Cluster: clientcmdv1.Cluster{Server: testServer},
+		Cluster: clusterinventory.Cluster{Server: testServer},
 	})
 }
 
 func newCustomProviderClusterProfile(labels map[string]string) *clusterinventory.ClusterProfile {
 	return newClusterProfile(labels, clusterinventory.AccessProvider{
 		Name:    testProviderName,
-		Cluster: clientcmdv1.Cluster{Server: testServer},
+		Cluster: clusterinventory.Cluster{Server: testServer},
 	})
 }
 
@@ -225,7 +224,7 @@ func newInventoryClusterProfile(
 	createdAt time.Time,
 ) *clusterinventory.ClusterProfile {
 	profile := newBuiltinProviderClusterProfile(map[string]string{
-		inventoryMemberIDLabel: memberID,
+		clusterinventory.LabelInventoryMemberIDKey: memberID,
 	})
 	profile.Name = name
 	profile.Namespace = namespace
@@ -254,7 +253,7 @@ func clusterProfileOwnerReference(name string, uid types.UID) metav1.OwnerRefere
 	controller := true
 	blockOwnerDeletion := false
 	return metav1.OwnerReference{
-		APIVersion:         "multicluster.x-k8s.io/v1alpha1",
+		APIVersion:         "multicluster.x-k8s.io/v1alpha2",
 		Kind:               "ClusterProfile",
 		Name:               name,
 		UID:                uid,
@@ -534,30 +533,25 @@ func TestGeneratedClusterProfileMetadata(t *testing.T) {
 func TestEffectiveAccessProviderSelection(t *testing.T) {
 	profile := &clusterinventory.ClusterProfile{
 		Status: clusterinventory.ClusterProfileStatus{
-			CredentialProviders: []clusterinventory.CredentialProvider{
-				{
-					Name:    testProviderName,
-					Cluster: clientcmdv1.Cluster{Server: "https://deprecated.example.com"},
-				},
-				{
-					Name:    "second",
-					Cluster: clientcmdv1.Cluster{Server: "https://second.example.com"},
-				},
-			},
 			AccessProviders: []clusterinventory.AccessProvider{
 				{
 					Name:    testProviderName,
-					Cluster: clientcmdv1.Cluster{Server: testServer},
+					Cluster: clusterinventory.Cluster{Server: testServer},
+				},
+				{
+					Name:    "second",
+					Cluster: clusterinventory.Cluster{Server: "https://second.example.com"},
 				},
 			},
 		},
 	}
 
-	t.Run("overrides a deprecated credential provider of the same name", func(t *testing.T) {
+	t.Run("indexes every advertised access provider by name", func(t *testing.T) {
 		effective := effectiveAccessProviders(profile)
 
 		require.Len(t, effective, 2)
 		assert.Equal(t, testServer, effective[testProviderName].Cluster.Server)
+		assert.Equal(t, "https://second.example.com", effective["second"].Cluster.Server)
 	})
 
 	t.Run("selects the first configured provider", func(t *testing.T) {
@@ -732,7 +726,7 @@ func TestInventoryMemberReconciliation(t *testing.T) {
 
 	t.Run("does not correlate absent and empty member IDs", func(t *testing.T) {
 		absentProfile := newInventoryClusterProfile("without-id", testNamespace, "", createdAt)
-		delete(absentProfile.Labels, inventoryMemberIDLabel)
+		delete(absentProfile.Labels, clusterinventory.LabelInventoryMemberIDKey)
 		emptyProfile := newInventoryClusterProfile("empty-id", testNamespace, "", createdAt)
 		r, recorder := newReconciler(absentProfile, emptyProfile)
 
@@ -783,7 +777,7 @@ func TestInventoryMemberReconciliation(t *testing.T) {
 		// A label change enqueues both the old and the new member group; reconcile them in that order.
 		movingKey := client.ObjectKeyFromObject(moving)
 		updateProfile(t, r, movingKey, func(profile *clusterinventory.ClusterProfile) {
-			profile.Labels[inventoryMemberIDLabel] = newMemberID
+			profile.Labels[clusterinventory.LabelInventoryMemberIDKey] = newMemberID
 		})
 		_, err = r.Reconcile(context.Background(), inventoryRequest(testNamespace, originalMemberID))
 		require.NoError(t, err)
@@ -794,14 +788,14 @@ func TestInventoryMemberReconciliation(t *testing.T) {
 		}
 
 		updateProfile(t, r, movingKey, func(profile *clusterinventory.ClusterProfile) {
-			delete(profile.Labels, inventoryMemberIDLabel)
+			delete(profile.Labels, clusterinventory.LabelInventoryMemberIDKey)
 		})
 		_, err = r.Reconcile(context.Background(), inventoryRequest(testNamespace, newMemberID))
 		require.NoError(t, err)
 		_, err = r.Reconcile(context.Background(), reconcile.Request{NamespacedName: movingKey})
 		require.NoError(t, err)
 		movingSecret := getSecretByKey(t, r, clusterProfileSecretKey(moving))
-		assert.NotContains(t, movingSecret.Labels, inventoryMemberIDLabel)
+		assert.NotContains(t, movingSecret.Labels, clusterinventory.LabelInventoryMemberIDKey)
 	})
 
 	t.Run("maps a ClusterProfile to a namespace-scoped member request", func(t *testing.T) {
@@ -810,10 +804,10 @@ func TestInventoryMemberReconciliation(t *testing.T) {
 		requests := inventoryMemberRequest(context.Background(), profile)
 
 		assert.Equal(t, []reconcile.Request{inventoryRequest(teamANamespace, memberID)}, requests)
-		delete(profile.Labels, inventoryMemberIDLabel)
+		delete(profile.Labels, clusterinventory.LabelInventoryMemberIDKey)
 		assert.Equal(t, []reconcile.Request{{NamespacedName: client.ObjectKeyFromObject(profile)}},
 			inventoryMemberRequest(context.Background(), profile))
-		profile.Labels[inventoryMemberIDLabel] = ""
+		profile.Labels[clusterinventory.LabelInventoryMemberIDKey] = ""
 		assert.Equal(t, []reconcile.Request{{NamespacedName: client.ObjectKeyFromObject(profile)}},
 			inventoryMemberRequest(context.Background(), profile))
 	})
@@ -965,7 +959,7 @@ func TestRenderFailureRevocation(t *testing.T) {
 			profile.Status.AccessProviders = append(profile.Status.AccessProviders,
 				clusterinventory.AccessProvider{
 					Name:    "unrelated",
-					Cluster: clientcmdv1.Cluster{Server: "https://unrelated.example.com"},
+					Cluster: clusterinventory.Cluster{Server: "https://unrelated.example.com"},
 				})
 		})
 		reconciler.AccessProviders = nil
@@ -998,7 +992,7 @@ func TestRenderFailureRevocation(t *testing.T) {
 			profile.Status.AccessProviders = []clusterinventory.AccessProvider{
 				{
 					Name:    unconfiguredProviderName,
-					Cluster: clientcmdv1.Cluster{Server: "https://replacement.example.com"},
+					Cluster: clusterinventory.Cluster{Server: "https://replacement.example.com"},
 				},
 			}
 		})
@@ -1175,7 +1169,7 @@ func TestClusterProfileReconciler(t *testing.T) {
 			providersFile := writeProvidersFile(t)
 
 			clusterProfile := newCustomProviderClusterProfile(nil)
-			clusterProfile.Status.AccessProviders[0].Cluster.Extensions = []clientcmdv1.NamedExtension{
+			clusterProfile.Status.AccessProviders[0].Cluster.Extensions = []clusterinventory.NamedExtension{
 				{
 					Name: "client.authentication.k8s.io/exec",
 					Extension: runtime.RawExtension{
@@ -1234,7 +1228,7 @@ func TestClusterProfileReconciler(t *testing.T) {
 			providersFile := writeProviderConfigFile(t, data)
 
 			clusterProfile := newCustomProviderClusterProfile(nil)
-			clusterProfile.Status.AccessProviders[0].Cluster.Extensions = []clientcmdv1.NamedExtension{
+			clusterProfile.Status.AccessProviders[0].Cluster.Extensions = []clusterinventory.NamedExtension{
 				{
 					Name: "clusterprofiles.multicluster.x-k8s.io/exec/additional-args",
 					Extension: runtime.RawExtension{
@@ -1342,7 +1336,7 @@ func TestClusterProfileReconciler(t *testing.T) {
 		})
 
 		t.Run("should preserve the cluster connection fields of the access provider", func(t *testing.T) {
-			connection := clientcmdv1.Cluster{
+			connection := clusterinventory.Cluster{
 				Server:                   testServer,
 				TLSServerName:            "api.internal.example.com",
 				InsecureSkipTLSVerify:    true,
@@ -1393,22 +1387,6 @@ func TestClusterProfileReconciler(t *testing.T) {
 				require.NoError(t, err)
 				assertConnection(t, getSecret(t, r, testNamespace))
 			})
-		})
-
-		t.Run("should not create a builtin secret from deprecated CredentialProviders", func(t *testing.T) {
-			clusterProfile := newBuiltinProviderClusterProfile(nil)
-			clusterProfile.Status.CredentialProviders = clusterProfile.Status.AccessProviders
-			clusterProfile.Status.AccessProviders = nil
-			r := &ClusterProfileReconciler{
-				Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile).Build(),
-				Log:    logr.Discard(),
-				Scheme: scheme,
-			}
-
-			_, err := r.Reconcile(context.Background(), profileRequest())
-
-			require.Error(t, err)
-			requireNoSecret(t, r, secretKey(testNamespace))
 		})
 
 		t.Run("should propagate ClusterProfile labels to the generated secret", func(t *testing.T) {
@@ -1679,6 +1657,67 @@ func TestClusterProfileReconciler(t *testing.T) {
 			requireExactTestClusterSecretData(t, stableSecret)
 		})
 
+		// Secrets written before the v1alpha2 migration reference their ClusterProfile through
+		// multicluster.x-k8s.io/v1alpha1; ownership is matched by UID, so they stay managed.
+		t.Run("should keep managing Secrets that reference the ClusterProfile through v1alpha1", func(t *testing.T) {
+			legacyOwnerReference := func(clusterProfile *clusterinventory.ClusterProfile) metav1.OwnerReference {
+				reference := clusterProfileOwnerReference(clusterProfile.Name, clusterProfile.UID)
+				reference.APIVersion = "multicluster.x-k8s.io/v1alpha1"
+				return reference
+			}
+
+			t.Run("upgrades the owner reference when the Secret is repaired", func(t *testing.T) {
+				clusterProfile := newBuiltinProviderClusterProfile(nil)
+				secret := newControlledSecret(clusterProfile, "legacy-secret-uid")
+				secret.OwnerReferences = []metav1.OwnerReference{legacyOwnerReference(clusterProfile)}
+				r := &ClusterProfileReconciler{
+					Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile, secret).Build(),
+					Log:    logr.Discard(),
+					Scheme: scheme,
+				}
+
+				_, err := r.Reconcile(context.Background(), profileRequest())
+
+				require.NoError(t, err)
+				upgraded := getSecret(t, r, testNamespace)
+				assert.Equal(t, secret.UID, upgraded.UID)
+				assert.Equal(t, []metav1.OwnerReference{
+					clusterProfileOwnerReference(testClusterName, testClusterProfileUID),
+				}, upgraded.OwnerReferences)
+				requireExactTestClusterSecretData(t, upgraded)
+			})
+
+			t.Run("prunes the Secret after access is revoked", func(t *testing.T) {
+				clusterProfile := newClusterProfile(nil)
+				secret := newControlledSecret(clusterProfile, "legacy-secret-uid")
+				secret.OwnerReferences = []metav1.OwnerReference{legacyOwnerReference(clusterProfile)}
+				r := &ClusterProfileReconciler{
+					Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile, secret).Build(),
+					Log:    logr.Discard(),
+					Scheme: scheme,
+				}
+
+				_, err := r.Reconcile(context.Background(), profileRequest())
+
+				require.NoError(t, err)
+				requireNoSecret(t, r, secretKey(testNamespace))
+			})
+
+			t.Run("maps the Secret to its ClusterProfile request", func(t *testing.T) {
+				clusterProfile := newBuiltinProviderClusterProfile(nil)
+				secret := newControlledSecret(clusterProfile, "legacy-secret-uid")
+				secret.OwnerReferences = []metav1.OwnerReference{legacyOwnerReference(clusterProfile)}
+				r := &ClusterProfileReconciler{
+					Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile).Build(),
+					Log:    logr.Discard(),
+					Scheme: scheme,
+				}
+
+				assert.Equal(t, []reconcile.Request{profileRequest()},
+					r.ownedSecretRequests(context.Background(), secret))
+			})
+		})
+
 		t.Run("should succeed idempotently when no access provider or Secret exists", func(t *testing.T) {
 			clusterProfile := newClusterProfile(nil)
 			r := &ClusterProfileReconciler{
@@ -1789,27 +1828,6 @@ func TestClusterProfileReconciler(t *testing.T) {
 			assert.True(t, apierrors.IsConflict(err))
 			assertDeletePreconditions(t, conflictClient, secret)
 			assert.Equal(t, secret.UID, getSecret(t, r, testNamespace).UID)
-		})
-
-		t.Run("should continue using a deprecated credential provider when access providers are empty", func(t *testing.T) {
-			providersFile := writeProvidersFile(t)
-			clusterProfile := newCustomProviderClusterProfile(nil)
-			clusterProfile.Status.CredentialProviders = clusterProfile.Status.AccessProviders
-			clusterProfile.Status.AccessProviders = nil
-			r := &ClusterProfileReconciler{
-				Client:                     fake.NewClientBuilder().WithScheme(scheme).WithObjects(clusterProfile).Build(),
-				Log:                        logr.Discard(),
-				Scheme:                     scheme,
-				ClusterProfileProviderFile: providersFile,
-			}
-			require.NoError(t, r.loadClusterProfileProviderFile())
-
-			_, err := r.Reconcile(context.Background(), profileRequest())
-
-			require.NoError(t, err)
-			secret := getSecret(t, r, testNamespace)
-			assert.Equal(t, testServer, string(secret.Data[secretDataServerKey]))
-			assert.True(t, metav1.IsControlledBy(secret, clusterProfile))
 		})
 
 		t.Run("should create a secret per namespace for same-named ClusterProfiles", func(t *testing.T) {
