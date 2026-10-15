@@ -172,7 +172,7 @@ spec:
       volumes:
         - name: secretreader-plugin
           image:
-            reference: registry.k8s.io/cluster-inventory-api/secretreader:v0.1.3
+            reference: registry.k8s.io/cluster-inventory-api/secretreader:v0.2.0
             pullPolicy: IfNotPresent
       containers:
         - name: application-controller
@@ -188,7 +188,7 @@ spec:
       volumes:
         - name: secretreader-plugin
           image:
-            reference: registry.k8s.io/cluster-inventory-api/secretreader:v0.1.3
+            reference: registry.k8s.io/cluster-inventory-api/secretreader:v0.2.0
             pullPolicy: IfNotPresent
       containers:
         - name: server
@@ -256,7 +256,7 @@ Create the Cluster Profile object to represent `spoke`:
 
 ```bash
 kubectl apply -f - <<EOF
-apiVersion: "multicluster.x-k8s.io/v1alpha1"
+apiVersion: "multicluster.x-k8s.io/v1alpha2"
 kind: ClusterProfile
 metadata:
   name: spoke-cluster

@@ -106,6 +106,12 @@ another object; those cases are reported as collisions for an operator to
 resolve. Writes and deletes carry preconditions, so a concurrent writer causes
 a retry instead of silently lost data.
 
+Ownership is matched by the ClusterProfile UID, not by the API version in the
+owner reference. Secrets written by controller releases that used
+`multicluster.x-k8s.io/v1alpha1` therefore stay managed after an upgrade, and
+their owner reference is rewritten to `multicluster.x-k8s.io/v1alpha2` on the
+next update.
+
 For a custom access provider, the controller:
 
 1. Reads the access providers file configured by

@@ -22,7 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/events"
-	clusterinventory "sigs.k8s.io/cluster-inventory-api/apis/v1alpha1"
+	clusterinventory "sigs.k8s.io/cluster-inventory-api/apis/v1alpha2"
 	"sigs.k8s.io/cluster-inventory-api/pkg/access"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -56,9 +56,6 @@ const (
 	builtinCloudProviderGCP   = "gcp"
 	// Synthetic requests use an invalid object-name prefix to avoid ClusterProfile name collisions.
 	inventoryMemberRequestPrefix = "inventory-member-id:"
-	// TODO: Remove this local constant and use clusterinventory.LabelInventoryMemberIDKey after
-	// upgrading to a release that includes kubernetes-sigs/cluster-inventory-api#83.
-	inventoryMemberIDLabel = "multicluster.x-k8s.io/inventory-member-id"
 
 	eventReasonDuplicateInventoryMemberID = "DuplicateInventoryMemberID"
 	eventReasonAmbiguousInventoryMemberID = "AmbiguousInventoryMemberID"
@@ -162,7 +159,7 @@ func (r *ClusterProfileReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			eventReasonInvalidInventoryMemberID,
 			fmt.Sprintf(
 				"label %q must be non-empty when set; treating it as absent and not deduplicating this ClusterProfile",
-				inventoryMemberIDLabel,
+				clusterinventory.LabelInventoryMemberIDKey,
 			),
 		)
 	}
@@ -209,7 +206,7 @@ func (r *ClusterProfileReconciler) listActiveInventoryMemberProfiles(
 		ctx,
 		&clusterProfiles,
 		client.InNamespace(namespace),
-		client.MatchingLabels{inventoryMemberIDLabel: memberID},
+		client.MatchingLabels{clusterinventory.LabelInventoryMemberIDKey: memberID},
 	); err != nil {
 		return nil, fmt.Errorf("failed to list ClusterProfiles for inventory member %q: %w", memberID, err)
 	}
@@ -314,7 +311,7 @@ func (r *ClusterProfileReconciler) reconcileClusterProfile(
 		return nil
 	}
 
-	if len(clusterProfile.Status.CredentialProviders)+len(clusterProfile.Status.AccessProviders) == 0 {
+	if len(clusterProfile.Status.AccessProviders) == 0 {
 		if err := r.pruneSecret(ctx, clusterProfile); err != nil {
 			log.Error(err, "unable to remove secret after ClusterProfile access was revoked")
 			return err
@@ -641,12 +638,7 @@ func selectCustomAccessProvider(
 func effectiveAccessProviders(
 	clusterProfile *clusterinventory.ClusterProfile,
 ) map[string]*clusterinventory.AccessProvider {
-	providers := make(map[string]*clusterinventory.AccessProvider,
-		len(clusterProfile.Status.CredentialProviders)+len(clusterProfile.Status.AccessProviders))
-	for i := range clusterProfile.Status.CredentialProviders {
-		provider := &clusterProfile.Status.CredentialProviders[i]
-		providers[provider.Name] = provider
-	}
+	providers := make(map[string]*clusterinventory.AccessProvider, len(clusterProfile.Status.AccessProviders))
 	for i := range clusterProfile.Status.AccessProviders {
 		provider := &clusterProfile.Status.AccessProviders[i]
 		providers[provider.Name] = provider
@@ -729,7 +721,7 @@ func cloneAccessConfig(config *access.Config) *access.Config {
 
 // inventoryMemberID returns the label value and whether the label is present.
 func inventoryMemberID(object client.Object) (string, bool) {
-	memberID, set := object.GetLabels()[inventoryMemberIDLabel]
+	memberID, set := object.GetLabels()[clusterinventory.LabelInventoryMemberIDKey]
 	return memberID, set
 }
 

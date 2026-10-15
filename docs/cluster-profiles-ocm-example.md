@@ -67,6 +67,12 @@ export OCM_TOKEN=<token from clusteradm init output>
 export HUB_APISERVER=<hub api server>
 ```
 
+OCM installs and manages the `clusterprofiles.multicluster.x-k8s.io` CRD on the hub. The Cluster Profile controller reads `ClusterProfile`s through `multicluster.x-k8s.io/v1alpha2`, so the hub's CRD must serve that version (Cluster Inventory API v0.2.0 or later). Check the served versions with:
+
+```bash
+kubectl get crd clusterprofiles.multicluster.x-k8s.io -o jsonpath='{.spec.versions[*].name}'
+```
+
 ## 3. Register the managed cluster
 
 On the managed cluster, run the join command:

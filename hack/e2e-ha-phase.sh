@@ -499,7 +499,7 @@ create_profiles() {
       name="ha-profile-${i}"
       printf '%s\n' \
         '---' \
-        'apiVersion: multicluster.x-k8s.io/v1alpha1' \
+        'apiVersion: multicluster.x-k8s.io/v1alpha2' \
         'kind: ClusterProfile' \
         'metadata:' \
         "  name: ${name}" \

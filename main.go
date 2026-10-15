@@ -34,7 +34,7 @@ import (
 	logutils "github.com/argoproj/argo-cd/v3/util/log"
 
 	log "github.com/sirupsen/logrus"
-	clusterv1alpha1 "sigs.k8s.io/cluster-inventory-api/apis/v1alpha1"
+	clusterv1alpha2 "sigs.k8s.io/cluster-inventory-api/apis/v1alpha2"
 )
 
 const (
@@ -127,7 +127,7 @@ func NewCommand() *cobra.Command {
 	)
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
-	_ = clusterv1alpha1.AddToScheme(scheme)
+	_ = clusterv1alpha2.AddToScheme(scheme)
 
 	command := cobra.Command{
 		Use:               cliName,
@@ -304,7 +304,7 @@ func buildCacheOptions(
 
 	return cache.Options{
 		ByObject: map[ctrlclient.Object]cache.ByObject{
-			&clusterv1alpha1.ClusterProfile{}: {
+			&clusterv1alpha2.ClusterProfile{}: {
 				Namespaces: namespaceConfigs,
 			},
 			&corev1.Secret{}: {
